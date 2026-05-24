@@ -756,6 +756,243 @@ class TestFcasReserve:
 # ---------------------------------------------------------------------------
 
 
+class TestComplianceMechanic:
+    """Compliance directives are SCENARIO-DECLARED and ENGINE-ENFORCED.
+
+    A ``compliance_window`` event with ``min_soc_floor`` and/or
+    ``max_export_kw_override`` fires automatically when its window is
+    active. The controller's only way to avoid the penalty is to have
+    read the preceding qualitative_alert and positioned SOC / capped
+    exports ahead of time — the LLM moat for scenario 5.
+    """
+
+    @pytest.fixture
+    def state_with_low_soc(self) -> dict:
+        return {
+            "time": 5,
+            "demand": 50.0,
+            "solar": 10.0,
+            "soc": 0.30,
+            "profiles": {"demand": [50.0] * 10, "solar": [10.0] * 10},
+            "price_profile": [0.20] * 10,
+            "price": 0.20,
+        }
+
+    def test_no_penalty_when_no_compliance_events(self, engine, state_with_low_soc):
+        _, outputs = engine.step(state_with_low_soc, do_nothing_action())
+        assert outputs["cost_breakdown"]["compliance_penalty"] == pytest.approx(0.0)
+
+    def test_no_penalty_outside_window(self, engine, state_with_low_soc):
+        state = {
+            **state_with_low_soc,
+            "events": [
+                {
+                    "type": "compliance_window",
+                    "at_step": 10,
+                    "end_step": 20,
+                    "min_soc_floor": 0.80,
+                }
+            ],
+        }
+        _, outputs = engine.step(state, do_nothing_action())
+        assert outputs["cost_breakdown"]["compliance_penalty"] == pytest.approx(0.0)
+
+    def test_soc_floor_breach_charged(self, engine, state_with_low_soc):
+        state = {
+            **state_with_low_soc,
+            "events": [
+                {
+                    "type": "compliance_window",
+                    "at_step": 0,
+                    "end_step": 10,
+                    "min_soc_floor": 0.50,
+                }
+            ],
+        }
+        _, outputs = engine.step(state, do_nothing_action())
+        expected = 0.20 * engine.config.compliance_soc_penalty_per_unit
+        assert outputs["cost_breakdown"]["compliance_penalty"] == pytest.approx(expected)
+
+    def test_soc_floor_satisfied_zero_penalty(self, engine, state_with_low_soc):
+        plenty = {**state_with_low_soc, "soc": 0.90}
+        state = {
+            **plenty,
+            "events": [
+                {
+                    "type": "compliance_window",
+                    "at_step": 0,
+                    "end_step": 10,
+                    "min_soc_floor": 0.50,
+                }
+            ],
+        }
+        _, outputs = engine.step(state, do_nothing_action())
+        assert outputs["cost_breakdown"]["compliance_penalty"] == pytest.approx(0.0)
+
+    def test_export_cap_breach_charged(self, engine):
+        state = {
+            "time": 0,
+            "demand": 5.0,
+            "solar": 60.0,
+            "soc": 1.0,
+            "profiles": {"demand": [5.0] * 2, "solar": [60.0] * 2},
+            "price_profile": [0.20] * 2,
+            "price": 0.20,
+            "events": [
+                {
+                    "type": "compliance_window",
+                    "at_step": 0,
+                    "end_step": 10,
+                    "max_export_kw_override": 10.0,
+                }
+            ],
+        }
+        _, outputs = engine.step(state, do_nothing_action())
+        assert outputs["net_grid_power"] == pytest.approx(-50.0)
+        cfg = engine.config
+        expected = 40.0 * cfg.dt_hours * cfg.compliance_export_penalty_per_kw
+        assert outputs["cost_breakdown"]["compliance_penalty"] == pytest.approx(expected)
+
+    def test_export_cap_no_penalty_when_importing(self, engine, state_with_low_soc):
+        state = {
+            **state_with_low_soc,
+            "events": [
+                {
+                    "type": "compliance_window",
+                    "at_step": 0,
+                    "end_step": 10,
+                    "max_export_kw_override": 5.0,
+                }
+            ],
+        }
+        _, outputs = engine.step(state, do_nothing_action())
+        assert outputs["net_grid_power"] > 0
+        assert outputs["cost_breakdown"]["compliance_penalty"] == pytest.approx(0.0)
+
+    def test_both_constraints_sum_on_single_event(self, engine):
+        state = {
+            "time": 0,
+            "demand": 5.0,
+            "solar": 60.0,
+            "soc": 0.10,
+            "profiles": {"demand": [5.0] * 2, "solar": [60.0] * 2},
+            "price_profile": [0.20] * 2,
+            "price": 0.20,
+            "events": [
+                {
+                    "type": "compliance_window",
+                    "at_step": 0,
+                    "end_step": 10,
+                    "min_soc_floor": 0.40,
+                    "max_export_kw_override": 10.0,
+                }
+            ],
+        }
+        _, outputs = engine.step(state, do_nothing_action())
+        cfg = engine.config
+        soc_part = 0.30 * cfg.compliance_soc_penalty_per_unit
+        exp_part = 40.0 * cfg.dt_hours * cfg.compliance_export_penalty_per_kw
+        assert outputs["cost_breakdown"]["compliance_penalty"] == pytest.approx(
+            soc_part + exp_part
+        )
+
+    def test_multiple_windows_accumulate(self, engine, state_with_low_soc):
+        state = {
+            **state_with_low_soc,
+            "events": [
+                {
+                    "type": "compliance_window",
+                    "at_step": 0,
+                    "end_step": 10,
+                    "min_soc_floor": 0.40,
+                },
+                {
+                    "type": "compliance_window",
+                    "at_step": 0,
+                    "end_step": 10,
+                    "min_soc_floor": 0.50,
+                },
+            ],
+        }
+        _, outputs = engine.step(state, do_nothing_action())
+        cfg = engine.config
+        expected = (0.10 + 0.20) * cfg.compliance_soc_penalty_per_unit
+        assert outputs["cost_breakdown"]["compliance_penalty"] == pytest.approx(expected)
+
+    def test_other_event_types_ignored(self, engine, state_with_low_soc):
+        state = {
+            **state_with_low_soc,
+            "events": [
+                {
+                    "type": "forecast_bias",
+                    "at_step": 0,
+                    "end_step": 10,
+                    "channel": "demand",
+                    "bias": 20.0,
+                    "min_soc_floor": 0.90,
+                }
+            ],
+        }
+        _, outputs = engine.step(state, do_nothing_action())
+        assert outputs["cost_breakdown"]["compliance_penalty"] == pytest.approx(0.0)
+
+    def test_penalty_below_blackout(self):
+        from watt_the_hack.engine.engine import SimulationConfig
+
+        cfg = SimulationConfig()
+        worst_realistic_penalty = 0.30 * cfg.compliance_soc_penalty_per_unit * 4
+        blackout_10kwh = 10.0 * cfg.blackout_penalty_per_kwh
+        assert worst_realistic_penalty < blackout_10kwh
+
+    def test_penalty_above_compliance_cost(self):
+        from watt_the_hack.engine.engine import SimulationConfig
+
+        cfg = SimulationConfig()
+        wear_to_comply = 10.0 * cfg.battery_wear_cost_per_kwh
+        ignore_4_steps = 0.10 * cfg.compliance_soc_penalty_per_unit * 4
+        assert ignore_4_steps > wear_to_comply
+
+    def test_missing_constraint_keys_silently_zero(self, engine, state_with_low_soc):
+        state = {
+            **state_with_low_soc,
+            "events": [{"type": "compliance_window", "at_step": 0, "end_step": 10}],
+        }
+        _, outputs = engine.step(state, do_nothing_action())
+        assert outputs["cost_breakdown"]["compliance_penalty"] == pytest.approx(0.0)
+
+    def test_malformed_constraint_values_silently_disabled(
+        self, engine, state_with_low_soc
+    ):
+        state = {
+            **state_with_low_soc,
+            "events": [
+                {
+                    "type": "compliance_window",
+                    "at_step": 0,
+                    "end_step": 10,
+                    "min_soc_floor": "high",
+                    "max_export_kw_override": [1, 2, 3],
+                }
+            ],
+        }
+        _, outputs = engine.step(state, do_nothing_action())
+        assert outputs["cost_breakdown"]["compliance_penalty"] == pytest.approx(0.0)
+
+    def test_agent_plan_does_not_drive_penalty(self, engine, state_with_low_soc):
+        """Regression: setting agent_plan compliance keys must NOT trigger
+        the penalty — the engine reads scenario events only."""
+        state = {
+            **state_with_low_soc,
+            "agent_plan": {
+                "compliance_window": [0, 10],
+                "min_soc_floor": 0.90,
+                "max_export_kw_override": 5.0,
+            },
+        }
+        _, outputs = engine.step(state, do_nothing_action())
+        assert outputs["cost_breakdown"]["compliance_penalty"] == pytest.approx(0.0)
+
+
 class TestActionKeys:
     def test_engine_reads_string_keys(self, engine, base_state):
         """Engine reads action via plain string keys."""
