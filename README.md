@@ -1,13 +1,13 @@
-# GridLock Engine
+# Watt The Hack Engine
 
-The simulation engine for the **Watt The Hack / GridLock** energy grid hackathon (DeepNeuron).
+The simulation engine for the **Watt The Hack** energy grid hackathon (DeepNeuron).
 
 This is the public engine package — controllers, scenarios authoring, and the judging server live in private repos. Participants use this package to develop and test their controllers locally before submitting to the hackathon evaluation server.
 
 ## Install
 
 ```bash
-pip install git+https://github.com/AaronEliasZachariah/GridLock-Engine.git
+pip install git+https://github.com/AaronEliasZachariah/Watt-The-Hack-Engine-Public.git
 ```
 
 ## Quick start
