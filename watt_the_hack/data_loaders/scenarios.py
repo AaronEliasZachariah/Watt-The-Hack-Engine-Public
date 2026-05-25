@@ -19,11 +19,18 @@ from typing import Any
 
 from watt_the_hack.engine.engine import SimulationConfig
 
-SCENARIOS_ROOT = (
-    Path(os.environ["SCENARIOS_DATA_DIR"])
-    if "SCENARIOS_DATA_DIR" in os.environ
-    else Path(__file__).resolve().parents[2] / "scenarios"
-)
+def scenarios_root() -> Path:
+    """Return the active scenarios directory (re-reads ``SCENARIOS_DATA_DIR`` each call)."""
+    if "SCENARIOS_DATA_DIR" in os.environ:
+        return Path(os.environ["SCENARIOS_DATA_DIR"])
+    return Path(__file__).resolve().parents[2] / "scenarios"
+
+
+def __getattr__(name: str) -> Any:
+    # Back-compat: ``from ... import SCENARIOS_ROOT`` (notebooks/tests).
+    if name == "SCENARIOS_ROOT":
+        return scenarios_root()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 # Feature-key → mechanic-id mapping, with the engine's default-when-absent.
 # Mirrors `_gate_features` in engine.py: omit the features dict and everything
@@ -325,7 +332,7 @@ def list_scenarios(
     root: Path | None = None, include_judging: bool = False
 ) -> list[dict]:
     """Return a summary list of all scenarios under scenarios/. Used by the API."""
-    root = root or SCENARIOS_ROOT
+    root = root or scenarios_root()
     if not root.exists():
         return []
     summaries = []
@@ -346,7 +353,7 @@ def list_scenarios(
                 "pool": pool,
                 "archetype": spec.get("archetype", ""),
                 "one_liner": spec.get("narrative", {}).get("one_liner", ""),
-                "path": str(path.relative_to(root.parent)),
+                "path": str(path.relative_to(root)),
                 # Lightweight mechanic ids so the frontend can derive the
                 # "unlocked in X" progression in a single round trip rather
                 # than calling /sim/init per scenario.
@@ -358,11 +365,25 @@ def list_scenarios(
 
 def find_scenario_by_id(scenario_id: str, root: Path | None = None) -> Path | None:
     """Look up a scenario file by its `id` field."""
-    root = root or SCENARIOS_ROOT
+    root = root or scenarios_root()
     for summary in list_scenarios(root, include_judging=True):
         if summary["id"] == scenario_id:
-            return root.parent / summary["path"]
+            return root / summary["path"]
     return None
+
+
+def resolve_scenario(scenario: str, root: Path | None = None) -> Path | None:
+    """Resolve a scenario by `id` (e.g. ``duck_curve``) or by JSON file path."""
+    root = root or scenarios_root()
+    candidate = Path(scenario)
+    if candidate.is_file():
+        return candidate.resolve()
+    if candidate.suffix == ".json":
+        for base in (root, root.parent, Path.cwd(), Path.cwd().parent):
+            hit = base / candidate
+            if hit.is_file():
+                return hit.resolve()
+    return find_scenario_by_id(scenario, root=root)
 
 
 # ---------- internals ----------
