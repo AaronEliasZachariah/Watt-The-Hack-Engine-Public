@@ -123,7 +123,7 @@ def build_scenario(scenario_id, title, is_judging=False):
         "id": scenario_id,
         "title": title,
         "archetype": "cybersecurity_agentic",
-        "pool": "judging" if is_judging else "synthetic",
+        "pool": "synthetic",
         "data_source": "synthetic",
         "synthetic": {
             "mode": "inline",
@@ -170,8 +170,7 @@ def build_scenario(scenario_id, title, is_judging=False):
         }
     }
     
-    folder = "judging" if is_judging else "synthetic"
-    out_path = os.path.join(os.path.dirname(__file__), "..", "..", "scenarios", folder, f"{scenario_id}.json")
+    out_path = os.path.join(os.path.dirname(__file__), "..", "..", "scenarios", "synthetic", f"{scenario_id}.json")
     with open(out_path, "w") as f:
         json.dump(scenario, f, indent=2)
     print(f"Generated {out_path}")

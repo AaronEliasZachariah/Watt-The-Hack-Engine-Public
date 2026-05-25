@@ -296,6 +296,7 @@ class TestMarketStep:
             "fcas_revenue",
             "compliance_penalty",
             "ids_cost",
+            "diesel_ban_penalty",
             "total",
         }
         # total must equal the sum of the other components
@@ -1020,6 +1021,232 @@ class TestComplianceMechanic:
         }
         _, outputs = engine.step(state, do_nothing_action())
         assert outputs["cost_breakdown"]["compliance_penalty"] == pytest.approx(0.0)
+
+
+class TestDieselBanExemption:
+    """The ``diesel_ban_window`` event + ``agent_plan["emergency_exemption"]``
+    mechanic — scenario 5 successor that tests LLM *composition*, not just
+    parsing.
+
+    During a ban, diesel still runs (physics is physics) but the engine
+    charges a per-kWh penalty unless the controller has submitted a valid
+    exemption naming the active ban's directive_id, with a substantive
+    reason and a plausible duration.
+    """
+
+    @pytest.fixture
+    def diesel_state(self) -> dict:
+        # Demand greatly exceeds grid cap — controller will WANT to fire diesel.
+        return {
+            "time": 10,
+            "demand": 180.0,
+            "solar": 0.0,
+            "soc": 0.50,
+            "profiles": {"demand": [180.0] * 20, "solar": [0.0] * 20},
+            "price_profile": [0.40] * 20,
+            "price": 0.40,
+        }
+
+    @staticmethod
+    def _diesel_action(kw: float) -> dict:
+        return {
+            "battery_flow_kw": 0.0,
+            "emergency_generator": kw,
+            "curtail_solar": 0.0,
+            "fcas_reserve_kw": 0.0,
+        }
+
+    @staticmethod
+    def _ban_event(directive_id: str = "AQ-TEST-1", start: int = 0, end: int = 50) -> dict:
+        return {
+            "id": "ban1",
+            "type": "diesel_ban_window",
+            "at_step": start,
+            "end_step": end,
+            "directive_id": directive_id,
+        }
+
+    def test_no_penalty_when_no_ban(self, engine, diesel_state):
+        _, outputs = engine.step(diesel_state, self._diesel_action(30.0))
+        assert outputs["cost_breakdown"]["diesel_ban_penalty"] == pytest.approx(0.0)
+
+    def test_no_penalty_when_ban_inactive(self, engine, diesel_state):
+        diesel_state["events"] = [self._ban_event(start=50, end=60)]
+        _, outputs = engine.step(diesel_state, self._diesel_action(30.0))
+        # ban window 50-60, current time 10 → inactive
+        assert outputs["cost_breakdown"]["diesel_ban_penalty"] == pytest.approx(0.0)
+
+    def test_no_penalty_when_diesel_idle(self, engine, diesel_state):
+        diesel_state["events"] = [self._ban_event()]
+        _, outputs = engine.step(diesel_state, self._diesel_action(0.0))
+        assert outputs["cost_breakdown"]["diesel_ban_penalty"] == pytest.approx(0.0)
+
+    def test_penalty_fires_during_active_ban(self, engine, diesel_state):
+        diesel_state["events"] = [self._ban_event()]
+        _, outputs = engine.step(diesel_state, self._diesel_action(30.0))
+        # 30 kW * 0.25 h * $3/kWh = $22.50
+        expected = 30.0 * engine.config.dt_hours * engine.config.diesel_ban_penalty_per_kwh
+        assert outputs["cost_breakdown"]["diesel_ban_penalty"] == pytest.approx(expected)
+
+    def test_valid_exemption_zeroes_penalty(self, engine, diesel_state):
+        diesel_state["events"] = [self._ban_event()]
+        diesel_state["agent_plan"] = {
+            "emergency_exemption": {
+                "directive_id": "AQ-TEST-1",
+                # Includes a digit (35) AND operational vocabulary (kW, SOC,
+                # demand) — the substantive markers the acceptor requires.
+                "reason": (
+                    "Current demand 145 kW exceeds the 120 kW grid import "
+                    "cap, with battery SOC at 0.50 leaving only 35 kW of "
+                    "discharge headroom — diesel is required to bridge "
+                    "the deficit and avoid a blackout."
+                ),
+                "expected_duration_steps": 8,
+            }
+        }
+        _, outputs = engine.step(diesel_state, self._diesel_action(30.0))
+        assert outputs["cost_breakdown"]["diesel_ban_penalty"] == pytest.approx(0.0)
+
+    def test_canned_reason_without_digits_rejects(self, engine, diesel_state):
+        """A template-y reason long enough to pass the char threshold but
+        with no digits should NOT pass — the acceptor requires a
+        quantitative reference, not just operator-speak.
+        """
+        diesel_state["events"] = [self._ban_event()]
+        diesel_state["agent_plan"] = {
+            "emergency_exemption": {
+                "directive_id": "AQ-TEST-1",
+                "reason": (
+                    "Operational necessity declared by automated controller "
+                    "— demand exceeds available capacity during the active "
+                    "ban window and load shedding would breach service levels."
+                ),
+                "expected_duration_steps": 8,
+            }
+        }
+        _, outputs = engine.step(diesel_state, self._diesel_action(30.0))
+        assert outputs["cost_breakdown"]["diesel_ban_penalty"] > 0
+
+    def test_reason_without_operational_vocab_rejects(self, engine, diesel_state):
+        """Long reason with digits but no operational keywords should
+        still reject — the digit alone isn't a credible justification.
+        """
+        diesel_state["events"] = [self._ban_event()]
+        diesel_state["agent_plan"] = {
+            "emergency_exemption": {
+                "directive_id": "AQ-TEST-1",
+                # Has digits but no operational vocab
+                "reason": (
+                    "The number 42 represents the sixth event in the third "
+                    "category of the seventh sequence at index 12 of the "
+                    "fourth list of seventeen."
+                ),
+                "expected_duration_steps": 8,
+            }
+        }
+        _, outputs = engine.step(diesel_state, self._diesel_action(30.0))
+        assert outputs["cost_breakdown"]["diesel_ban_penalty"] > 0
+
+    def test_wrong_directive_id_rejects(self, engine, diesel_state):
+        diesel_state["events"] = [self._ban_event(directive_id="AQ-REAL-1")]
+        diesel_state["agent_plan"] = {
+            "emergency_exemption": {
+                "directive_id": "AQ-WRONG-1",  # mismatch
+                "reason": "x" * 80,
+                "expected_duration_steps": 8,
+            }
+        }
+        _, outputs = engine.step(diesel_state, self._diesel_action(30.0))
+        assert outputs["cost_breakdown"]["diesel_ban_penalty"] > 0
+
+    def test_short_reason_rejects(self, engine, diesel_state):
+        diesel_state["events"] = [self._ban_event()]
+        diesel_state["agent_plan"] = {
+            "emergency_exemption": {
+                "directive_id": "AQ-TEST-1",
+                "reason": "yes",  # too short
+                "expected_duration_steps": 8,
+            }
+        }
+        _, outputs = engine.step(diesel_state, self._diesel_action(30.0))
+        assert outputs["cost_breakdown"]["diesel_ban_penalty"] > 0
+
+    def test_whitespace_padding_does_not_satisfy_reason_threshold(
+        self, engine, diesel_state
+    ):
+        """A 200-char string of all spaces doesn't satisfy the 60-non-whitespace
+        threshold. Prevents the cheap "pad with spaces" attack on the acceptor.
+        """
+        diesel_state["events"] = [self._ban_event()]
+        diesel_state["agent_plan"] = {
+            "emergency_exemption": {
+                "directive_id": "AQ-TEST-1",
+                "reason": " " * 200,
+                "expected_duration_steps": 8,
+            }
+        }
+        _, outputs = engine.step(diesel_state, self._diesel_action(30.0))
+        assert outputs["cost_breakdown"]["diesel_ban_penalty"] > 0
+
+    def test_duration_out_of_range_rejects(self, engine, diesel_state):
+        diesel_state["events"] = [self._ban_event()]
+        good_reason = "x" * 80
+        for bad_duration in (0, -1, 50, 999):  # config max is 12
+            diesel_state["agent_plan"] = {
+                "emergency_exemption": {
+                    "directive_id": "AQ-TEST-1",
+                    "reason": good_reason,
+                    "expected_duration_steps": bad_duration,
+                }
+            }
+            _, outputs = engine.step(diesel_state, self._diesel_action(30.0))
+            assert outputs["cost_breakdown"]["diesel_ban_penalty"] > 0
+
+    def test_boolean_duration_rejects(self, engine, diesel_state):
+        """``True`` is technically ``isinstance(_, int) == True`` in Python.
+        The acceptor must explicitly reject booleans so a malformed
+        controller can't pass ``expected_duration_steps: True``."""
+        diesel_state["events"] = [self._ban_event()]
+        diesel_state["agent_plan"] = {
+            "emergency_exemption": {
+                "directive_id": "AQ-TEST-1",
+                "reason": "x" * 80,
+                "expected_duration_steps": True,
+            }
+        }
+        _, outputs = engine.step(diesel_state, self._diesel_action(30.0))
+        assert outputs["cost_breakdown"]["diesel_ban_penalty"] > 0
+
+    def test_malformed_exemption_safely_rejects(self, engine, diesel_state):
+        """Various malformed agent_plan shapes must not crash."""
+        diesel_state["events"] = [self._ban_event()]
+        for bad_plan in (
+            {"emergency_exemption": "not a dict"},
+            {"emergency_exemption": []},
+            {"emergency_exemption": None},
+            {"emergency_exemption": {"directive_id": 42}},  # wrong type
+            {"emergency_exemption": {"directive_id": "AQ-TEST-1"}},  # missing fields
+        ):
+            diesel_state["agent_plan"] = bad_plan
+            _, outputs = engine.step(diesel_state, self._diesel_action(30.0))
+            # Penalty fires (no valid exemption) but no crash
+            assert outputs["cost_breakdown"]["diesel_ban_penalty"] > 0
+
+    def test_penalty_calibrated_below_blackout(self):
+        """The diesel-ban penalty plus normal fuel cost must stay below the
+        blackout cost — otherwise rational controllers blackout rather than
+        violate the ban, which is operationally absurd.
+        """
+        from watt_the_hack.engine.engine import SimulationConfig
+
+        cfg = SimulationConfig()
+        # Running diesel during a ban costs fuel + ban penalty per kWh
+        diesel_during_ban = (
+            cfg.emergency_generator_cost_per_kwh + cfg.diesel_ban_penalty_per_kwh
+        )
+        assert diesel_during_ban < cfg.blackout_penalty_per_kwh, (
+            "ban + fuel ≥ blackout — rational controllers would shed load"
+        )
 
 
 class TestActionKeys:

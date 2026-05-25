@@ -114,6 +114,29 @@ class SimulationConfig:
     compliance_soc_penalty_per_unit: float = 4.00  # $/SOC-unit short, per step
     compliance_export_penalty_per_kw: float = 2.00  # $/kW exceeded, per step
 
+    # ---------------- Diesel ban + exemption mechanic ----------------
+    # Scenarios may declare ``diesel_ban_window`` events (with a
+    # ``directive_id`` and an active step range). During an active ban
+    # the engine still lets the controller fire diesel — physics is
+    # physics — but charges a per-kWh penalty unless the controller
+    # has submitted a valid emergency exemption in ``agent_plan``.
+    #
+    # The exemption itself is a small structured document the LLM must
+    # COMPOSE (not just parse). The acceptor validates:
+    #   * ``directive_id`` exactly matches an active ban event
+    #   * ``reason`` is a string with ≥ ``min_exemption_reason_chars``
+    #     non-whitespace characters (forces an actual justification,
+    #     not a single-token "yes")
+    #   * ``expected_duration_steps`` is a positive int ≤ ``max_exemption_duration_steps``
+    #
+    # This is the "creative-reasoning" mechanic: a regex extractor can
+    # pull the ``directive_id`` out of the announcing alert text, but
+    # can't compose a credible 60-char justification anchored to the
+    # current operational context. An LLM does both naturally.
+    diesel_ban_penalty_per_kwh: float = 3.00  # $/kWh of diesel during a ban with no exemption
+    min_exemption_reason_chars: int = 60
+    max_exemption_duration_steps: int = 12
+
     # Forecast configuration (lookahead with growing noise)
     forecast_horizon: int = 16  # how many future steps the controller sees
     forecast_sigma_demand: float = 3.0  # additive noise std (kW)
@@ -371,14 +394,24 @@ class Engine(SimulationEngine):
         prev_grid_power = state.get("prev_grid_power_kw")
 
         soc_after = float(physics.next_soc)
+        events_full = self._full_events(state)
         compliance = self._compliance_breach(
-            self._full_events(state),
+            events_full,
             time,
             soc_after,
             physics.net_grid_power,
         )
         subscribe_ids = bool(action.get("subscribe_ids", False))
         ids_cost_per_step = float(state.get("ids_cost_per_step", 0.0))
+
+        # Diesel-ban: charge a per-kWh penalty if diesel ran inside an
+        # active ban window AND no valid exemption is held in agent_plan.
+        diesel_ban_penalty_kwh = self._diesel_ban_penalty_kwh(
+            events_full,
+            time,
+            state.get("agent_plan"),
+            physics.emergency_generator_kw,
+        )
 
         return self._market_step(
             net_grid_power=physics.net_grid_power,
@@ -396,7 +429,108 @@ class Engine(SimulationEngine):
             compliance_export_excess_kw=compliance["export_excess_kw"],
             subscribe_ids=subscribe_ids,
             ids_cost_per_step=ids_cost_per_step,
+            diesel_ban_penalty_kwh=diesel_ban_penalty_kwh,
         )
+
+    def _diesel_ban_penalty_kwh(
+        self,
+        events: list[dict],
+        time: int,
+        agent_plan: dict | None,
+        diesel_kw: float,
+    ) -> float:
+        """Return the diesel-ban-penalty kWh quantity to charge this step.
+
+        Returns 0 unless ALL of:
+          - a ``diesel_ban_window`` event is active at ``time``,
+          - the controller ran diesel (``diesel_kw > 0``),
+          - and ``agent_plan["emergency_exemption"]`` does NOT match the
+            acceptor criteria for the active ban's ``directive_id``.
+
+        The amount returned is ``diesel_kw * dt_hours`` so the caller can
+        multiply by ``$/kWh`` and produce a clean cost line.
+        """
+        if diesel_kw <= 0:
+            return 0.0
+        active_id: str | None = None
+        for ev in events:
+            if ev.get("type") != "diesel_ban_window":
+                continue
+            at_step = int(ev.get("at_step", -1))
+            end_step = int(ev.get("end_step", at_step))
+            if at_step <= time <= end_step:
+                active_id = ev.get("directive_id")
+                break
+        if active_id is None:
+            return 0.0  # no ban active — diesel is free to run
+
+        if self._exemption_valid(agent_plan, active_id):
+            return 0.0
+
+        return diesel_kw * self.config.dt_hours
+
+    # Operational vocabulary the acceptor expects to see in the
+    # ``reason`` field. Lowercase substring match — case-insensitive
+    # by lowering the reason before testing. A credible justification
+    # mentions at least one of these. Pure canned text without
+    # operational vocabulary is rejected.
+    _EXEMPTION_OPERATIONAL_KEYWORDS: tuple[str, ...] = (
+        "kw",
+        "soc",
+        "demand",
+        "deficit",
+        "import",
+        "capacity",
+        "peak",
+        "battery",
+        "generation",
+    )
+
+    def _exemption_valid(self, agent_plan: dict | None, directive_id: str) -> bool:
+        """Check ``agent_plan["emergency_exemption"]`` against acceptor
+        criteria. Returns True only if every field is present, well-typed,
+        and within bounds. Defensive parsing — never raises on malformed
+        controller output.
+
+        Acceptance criteria for the ``reason`` field, in order:
+          1. Non-empty string.
+          2. ≥ ``min_exemption_reason_chars`` non-whitespace characters.
+          3. Contains at least one digit (a quantitative reference).
+          4. Contains at least one operational keyword
+             (case-insensitive substring match — see
+             ``_EXEMPTION_OPERATIONAL_KEYWORDS``).
+
+        Criteria (3)+(4) together make it impractical to satisfy with a
+        static template. They force the reason to anchor to specific
+        operational vocabulary AND a numeric quantity, which is the
+        marker of a credible operator submission.
+        """
+        if not isinstance(agent_plan, dict):
+            return False
+        ex = agent_plan.get("emergency_exemption")
+        if not isinstance(ex, dict):
+            return False
+        if ex.get("directive_id") != directive_id:
+            return False
+        reason = ex.get("reason")
+        if not isinstance(reason, str):
+            return False
+        non_ws_chars = sum(1 for c in reason if not c.isspace())
+        if non_ws_chars < self.config.min_exemption_reason_chars:
+            return False
+        if not any(c.isdigit() for c in reason):
+            return False
+        reason_lower = reason.lower()
+        if not any(kw in reason_lower for kw in self._EXEMPTION_OPERATIONAL_KEYWORDS):
+            return False
+        duration = ex.get("expected_duration_steps")
+        # Reject booleans — they're a subclass of int in Python and we
+        # don't want True/False to sneak through as "1"/"0".
+        if isinstance(duration, bool) or not isinstance(duration, int):
+            return False
+        if duration < 1 or duration > self.config.max_exemption_duration_steps:
+            return False
+        return True
 
     @staticmethod
     def _compliance_breach(
@@ -943,6 +1077,7 @@ class Engine(SimulationEngine):
         compliance_export_excess_kw: float = 0.0,
         subscribe_ids: bool = False,
         ids_cost_per_step: float = 0.0,
+        diesel_ban_penalty_kwh: float = 0.0,
     ) -> dict:
         """Calculate every cost component for this timestep.
 
@@ -1018,6 +1153,12 @@ class Engine(SimulationEngine):
             # IDS cost: flat fee per step when controller subscribes to the
             # intrusion detection signal. Only active on cybersecurity scenario.
             "ids_cost": ids_cost_per_step if subscribe_ids else 0.0,
+            # Diesel-ban penalty: per-kWh charge when diesel runs inside an
+            # active ban window without a valid agent_plan exemption.
+            # Zero everywhere else.
+            "diesel_ban_penalty": (
+                diesel_ban_penalty_kwh * cfg.diesel_ban_penalty_per_kwh
+            ),
         }
 
         return {
