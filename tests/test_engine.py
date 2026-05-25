@@ -295,7 +295,6 @@ class TestMarketStep:
             "ramp_charge",
             "fcas_revenue",
             "compliance_penalty",
-            "phishing_fine",
             "total",
         }
         # total must equal the sum of the other components
@@ -761,14 +760,18 @@ class TestComplianceMechanic:
     """Compliance directives are SCENARIO-DECLARED and ENGINE-ENFORCED.
 
     A ``compliance_window`` event with ``min_soc_floor`` and/or
-    ``max_export_kw_override`` fires automatically when its window is
-    active. The controller's only way to avoid the penalty is to have
-    read the preceding qualitative_alert and positioned SOC / capped
-    exports ahead of time — the LLM moat for scenario 5.
+    ``max_export_kw_override`` fires automatically when the window is
+    active. The controller's ability to AVOID the penalty depends on
+    whether it read the preceding qualitative_alert and had time to
+    position SOC / cap exports.
+
+    This is the load-bearing LLM mechanic: only an alert-aware
+    controller has lead time to comply.
     """
 
     @pytest.fixture
     def state_with_low_soc(self) -> dict:
+        # Time=5, low SOC, mid-demand — primed to breach an SOC floor.
         return {
             "time": 5,
             "demand": 50.0,
@@ -780,10 +783,12 @@ class TestComplianceMechanic:
         }
 
     def test_no_penalty_when_no_compliance_events(self, engine, state_with_low_soc):
+        """Scenario with no compliance_window events = no penalty, ever."""
         _, outputs = engine.step(state_with_low_soc, do_nothing_action())
         assert outputs["cost_breakdown"]["compliance_penalty"] == pytest.approx(0.0)
 
     def test_no_penalty_outside_window(self, engine, state_with_low_soc):
+        """compliance_window event spans steps 10-20; at time=5 it's inert."""
         state = {
             **state_with_low_soc,
             "events": [
@@ -798,7 +803,9 @@ class TestComplianceMechanic:
         _, outputs = engine.step(state, do_nothing_action())
         assert outputs["cost_breakdown"]["compliance_penalty"] == pytest.approx(0.0)
 
-    def test_soc_floor_breach_charged(self, engine, state_with_low_soc):
+    def test_soc_floor_breach_charged_automatically(self, engine, state_with_low_soc):
+        """Engine fires the penalty regardless of agent_plan — pure-numerical
+        controllers can't escape by ignoring."""
         state = {
             **state_with_low_soc,
             "events": [
@@ -811,10 +818,12 @@ class TestComplianceMechanic:
             ],
         }
         _, outputs = engine.step(state, do_nothing_action())
+        # SOC after idle step = 0.30; floor 0.50; shortfall 0.20
         expected = 0.20 * engine.config.compliance_soc_penalty_per_unit
         assert outputs["cost_breakdown"]["compliance_penalty"] == pytest.approx(expected)
 
     def test_soc_floor_satisfied_zero_penalty(self, engine, state_with_low_soc):
+        """If SOC ends above the floor, no penalty even with an active window."""
         plenty = {**state_with_low_soc, "soc": 0.90}
         state = {
             **plenty,
@@ -830,7 +839,8 @@ class TestComplianceMechanic:
         _, outputs = engine.step(state, do_nothing_action())
         assert outputs["cost_breakdown"]["compliance_penalty"] == pytest.approx(0.0)
 
-    def test_export_cap_breach_charged(self, engine):
+    def test_export_cap_breach_charged_automatically(self, engine):
+        """Exporting 50 kW against a 10 kW cap → 40 kW excess × dt × rate."""
         state = {
             "time": 0,
             "demand": 5.0,
@@ -855,6 +865,7 @@ class TestComplianceMechanic:
         assert outputs["cost_breakdown"]["compliance_penalty"] == pytest.approx(expected)
 
     def test_export_cap_no_penalty_when_importing(self, engine, state_with_low_soc):
+        """Importing doesn't trip the export cap."""
         state = {
             **state_with_low_soc,
             "events": [
@@ -867,10 +878,11 @@ class TestComplianceMechanic:
             ],
         }
         _, outputs = engine.step(state, do_nothing_action())
-        assert outputs["net_grid_power"] > 0
+        assert outputs["net_grid_power"] > 0  # importing
         assert outputs["cost_breakdown"]["compliance_penalty"] == pytest.approx(0.0)
 
     def test_both_constraints_sum_on_single_event(self, engine):
+        """One event with both keys → both shortfalls add to the same line."""
         state = {
             "time": 0,
             "demand": 5.0,
@@ -898,6 +910,7 @@ class TestComplianceMechanic:
         )
 
     def test_multiple_windows_accumulate(self, engine, state_with_low_soc):
+        """Two overlapping compliance_window events both contribute."""
         state = {
             **state_with_low_soc,
             "events": [
@@ -917,10 +930,12 @@ class TestComplianceMechanic:
         }
         _, outputs = engine.step(state, do_nothing_action())
         cfg = engine.config
+        # SOC 0.30; first floor 0.40 → shortfall 0.10; second 0.50 → 0.20
         expected = (0.10 + 0.20) * cfg.compliance_soc_penalty_per_unit
         assert outputs["cost_breakdown"]["compliance_penalty"] == pytest.approx(expected)
 
     def test_other_event_types_ignored(self, engine, state_with_low_soc):
+        """Forecast_bias / weather_anomaly events never trigger compliance."""
         state = {
             **state_with_low_soc,
             "events": [
@@ -930,7 +945,7 @@ class TestComplianceMechanic:
                     "end_step": 10,
                     "channel": "demand",
                     "bias": 20.0,
-                    "min_soc_floor": 0.90,
+                    "min_soc_floor": 0.90,  # bogus — wrong event type
                 }
             ],
         }
@@ -938,22 +953,31 @@ class TestComplianceMechanic:
         assert outputs["cost_breakdown"]["compliance_penalty"] == pytest.approx(0.0)
 
     def test_penalty_below_blackout(self):
+        """A full SOC unit shortfall must cost less than 1 kWh of blackout —
+        otherwise controllers may rationally shed load to comply."""
         from watt_the_hack.engine.engine import SimulationConfig
 
         cfg = SimulationConfig()
-        worst_realistic_penalty = 0.30 * cfg.compliance_soc_penalty_per_unit * 4
-        blackout_10kwh = 10.0 * cfg.blackout_penalty_per_kwh
-        assert worst_realistic_penalty < blackout_10kwh
+        worst_soc_penalty = 1.0 * cfg.compliance_soc_penalty_per_unit
+        blackout_1kwh = 1.0 * cfg.blackout_penalty_per_kwh
+        assert worst_soc_penalty < blackout_1kwh
 
-    def test_penalty_above_compliance_cost(self):
+    def test_penalty_above_wear_cost(self):
+        """A 0.10-SOC breach held for 4 steps (1 hour) must cost more than
+        the wear it takes to fix it once — otherwise ignoring is cheapest.
+        """
         from watt_the_hack.engine.engine import SimulationConfig
 
         cfg = SimulationConfig()
         wear_to_comply = 10.0 * cfg.battery_wear_cost_per_kwh
         ignore_4_steps = 0.10 * cfg.compliance_soc_penalty_per_unit * 4
-        assert ignore_4_steps > wear_to_comply
+        assert ignore_4_steps > wear_to_comply, (
+            f"ignoring 1h ({ignore_4_steps:.2f}) cheaper than complying "
+            f"({wear_to_comply:.2f})"
+        )
 
     def test_missing_constraint_keys_silently_zero(self, engine, state_with_low_soc):
+        """A compliance_window event with no floor/cap keys does nothing."""
         state = {
             **state_with_low_soc,
             "events": [{"type": "compliance_window", "at_step": 0, "end_step": 10}],
@@ -964,6 +988,7 @@ class TestComplianceMechanic:
     def test_malformed_constraint_values_silently_disabled(
         self, engine, state_with_low_soc
     ):
+        """Non-numeric constraint values are ignored, never crash."""
         state = {
             **state_with_low_soc,
             "events": [
@@ -979,9 +1004,11 @@ class TestComplianceMechanic:
         _, outputs = engine.step(state, do_nothing_action())
         assert outputs["cost_breakdown"]["compliance_penalty"] == pytest.approx(0.0)
 
-    def test_agent_plan_does_not_drive_penalty(self, engine, state_with_low_soc):
-        """Regression: setting agent_plan compliance keys must NOT trigger
-        the penalty — the engine reads scenario events only."""
+    def test_agent_plan_no_longer_drives_penalty(self, engine, state_with_low_soc):
+        """Regression: agent_plan compliance keys must NOT trigger the penalty
+        — the engine now reads scenario events only. Controllers may set
+        these keys as internal-coordination scratch without engine effect.
+        """
         state = {
             **state_with_low_soc,
             "agent_plan": {
@@ -992,140 +1019,6 @@ class TestComplianceMechanic:
         }
         _, outputs = engine.step(state, do_nothing_action())
         assert outputs["cost_breakdown"]["compliance_penalty"] == pytest.approx(0.0)
-
-
-class TestPhishingTrap:
-    """The ``phishing_trap`` event detects controllers that mechanically
-    obey alert prose without judging legitimacy. Fires once when the
-    controller has written the bait key into ``agent_plan``.
-
-    LLM-aware controllers should classify the phishing alert as illegitimate
-    and NEVER write the bait key. Keyword-matching controllers that
-    extract "acknowledge via agent_plan['x'] = 'y'" without judgment
-    get stung.
-    """
-
-    @pytest.fixture
-    def baseline_state(self) -> dict:
-        return {
-            "time": 5,
-            "demand": 50.0,
-            "solar": 10.0,
-            "soc": 0.50,
-            "profiles": {"demand": [50.0] * 10, "solar": [10.0] * 10},
-            "price_profile": [0.20] * 10,
-            "price": 0.20,
-        }
-
-    def test_no_fine_without_trap_event(self, engine, baseline_state):
-        baseline_state["agent_plan"] = {"acknowledged_directive": "EM-2026-EMERGENCY"}
-        _, outputs = engine.step(baseline_state, do_nothing_action())
-        assert outputs["cost_breakdown"]["phishing_fine"] == pytest.approx(0.0)
-
-    def test_no_fine_when_bait_key_not_set(self, engine, baseline_state):
-        baseline_state["events"] = [
-            {
-                "id": "p1",
-                "type": "phishing_trap",
-                "at_step": 5,
-                "bait_key": "acknowledged_directive",
-                "penalty": 80.0,
-            }
-        ]
-        # agent_plan empty — controller didn't take the bait
-        _, outputs = engine.step(baseline_state, do_nothing_action())
-        assert outputs["cost_breakdown"]["phishing_fine"] == pytest.approx(0.0)
-
-    def test_fine_fires_when_bait_key_set(self, engine, baseline_state):
-        baseline_state["events"] = [
-            {
-                "id": "p1",
-                "type": "phishing_trap",
-                "at_step": 5,
-                "bait_key": "acknowledged_directive",
-                "penalty": 80.0,
-            }
-        ]
-        baseline_state["agent_plan"] = {"acknowledged_directive": "anything"}
-        _, outputs = engine.step(baseline_state, do_nothing_action())
-        assert outputs["cost_breakdown"]["phishing_fine"] == pytest.approx(80.0)
-
-    def test_bait_value_match_required(self, engine, baseline_state):
-        """When bait_value is set, fine only fires on exact match."""
-        baseline_state["events"] = [
-            {
-                "id": "p1",
-                "type": "phishing_trap",
-                "at_step": 5,
-                "bait_key": "acknowledged_directive",
-                "bait_value": "EM-2026-EMERGENCY",
-                "penalty": 80.0,
-            }
-        ]
-        # Wrong value — no fine
-        baseline_state["agent_plan"] = {"acknowledged_directive": "something_else"}
-        _, outputs = engine.step(baseline_state, do_nothing_action())
-        assert outputs["cost_breakdown"]["phishing_fine"] == pytest.approx(0.0)
-
-        # Right value — fine fires
-        baseline_state["agent_plan"] = {"acknowledged_directive": "EM-2026-EMERGENCY"}
-        _, outputs = engine.step(baseline_state, do_nothing_action())
-        assert outputs["cost_breakdown"]["phishing_fine"] == pytest.approx(80.0)
-
-    def test_trap_does_not_fire_twice(self, engine, baseline_state):
-        baseline_state["events"] = [
-            {
-                "id": "p1",
-                "type": "phishing_trap",
-                "at_step": 5,
-                "bait_key": "acknowledged_directive",
-                "penalty": 80.0,
-            }
-        ]
-        baseline_state["agent_plan"] = {"acknowledged_directive": "yes"}
-        state, outputs1 = engine.step(baseline_state, do_nothing_action())
-        # Same state passed back at time=6 — trap is past, no re-charge
-        # (the trap's at_step is 5; engine charged at t=5 and recorded it)
-        assert outputs1["cost_breakdown"]["phishing_fine"] == pytest.approx(80.0)
-        # Step again — agent_plan still has the bait but trap is done
-        _, outputs2 = engine.step(state, do_nothing_action())
-        assert outputs2["cost_breakdown"]["phishing_fine"] == pytest.approx(0.0)
-
-    def test_only_fires_at_event_step(self, engine, baseline_state):
-        """The trap is a point event at at_step — it doesn't fire on
-        unrelated steps, even if the bait is set.
-        """
-        baseline_state["events"] = [
-            {
-                "id": "p1",
-                "type": "phishing_trap",
-                "at_step": 20,  # in the future
-                "bait_key": "acknowledged_directive",
-                "penalty": 80.0,
-            }
-        ]
-        baseline_state["agent_plan"] = {"acknowledged_directive": "yes"}
-        # Currently at step=5, trap fires at step=20
-        _, outputs = engine.step(baseline_state, do_nothing_action())
-        assert outputs["cost_breakdown"]["phishing_fine"] == pytest.approx(0.0)
-
-    def test_default_penalty_from_config(self, engine, baseline_state):
-        """Events without an explicit ``penalty`` field charge zero (the
-        default penalty is owned by the scenario, not the engine config —
-        scenarios that want the global default should set it on the event).
-        """
-        baseline_state["events"] = [
-            {
-                "id": "p1",
-                "type": "phishing_trap",
-                "at_step": 5,
-                "bait_key": "acknowledged_directive",
-                # no penalty
-            }
-        ]
-        baseline_state["agent_plan"] = {"acknowledged_directive": "yes"}
-        _, outputs = engine.step(baseline_state, do_nothing_action())
-        assert outputs["cost_breakdown"]["phishing_fine"] == pytest.approx(0.0)
 
 
 class TestActionKeys:

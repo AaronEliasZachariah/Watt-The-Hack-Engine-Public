@@ -90,35 +90,29 @@ class SimulationConfig:
 
     # ---------------- Compliance mechanic (S5+) ----------------
     # Operators occasionally issue directives that constrain dispatch
-    # (e.g. AEMO Reserve Trader: "hold ≥30% SOC reserve until 22:00",
-    # "no exports above 20 kW during transformer maintenance").
+    # (e.g. AEMO Reserve Trader: "hold ≥30% SOC reserve until 22:00").
+    # Real-world: these directives arrive as prose to a human operator,
+    # who interprets them into operational limits. In the simulator,
+    # qualitative_alert events carry the prose; the controller's
+    # agent_plan (typically populated by an LLM strategy layer) carries
+    # the extracted numerical constraints. The engine reads the latter.
     #
-    # Real-world: these directives arrive as prose to a human operator
-    # who interprets them into operational limits. In the simulator the
-    # directives are SCENARIO-DECLARED via ``compliance_window`` events
-    # (with structured ``min_soc_floor`` / ``max_export_kw_override``
-    # fields read by the engine, not by the controller) and the engine
-    # enforces them automatically when their step window is active.
+    # Three constraint keys are recognised under state["agent_plan"]:
+    #   compliance_window: [start_step, end_step] — when the constraints
+    #     are active. If absent, the other keys are ignored (no
+    #     compliance enforcement that step).
+    #   min_soc_floor: float in [0,1] — penalise per-step SOC shortfall
+    #     below this level.
+    #   max_export_kw_override: float — penalise net exports above this
+    #     ceiling (i.e. abs(net_grid_power) above this when exporting).
     #
-    # The LLM moat is the LEAD TIME from reading the announcing
-    # ``qualitative_alert`` (which fires earlier and surfaces in
-    # ``state["alerts"]``) and positioning SOC / capping exports before
-    # the compliance window opens.
-    #
-    # Penalties calibrated so ignoring a typical 1-hour directive costs
-    # ~$45 (well above the demand-charge savings from peak shaving), but
-    # a full SOC unit breach for 1h ($60) stays below 10 kWh of blackout
-    # ($100) so controllers never rationally shed load to comply.
-    compliance_soc_penalty_per_unit: float = 15.00  # $/SOC-unit short, per step
-    compliance_export_penalty_per_kw: float = 8.00  # $/kW exceeded, per step
-
-    # Phishing penalty: scenarios may declare ``phishing_trap`` events
-    # naming a bait ``agent_plan`` key. If the controller has set that
-    # key by the trap's at_step, the engine charges a one-shot fine.
-    # This is how the operators_gauntlet catches controllers that
-    # mechanically obey alert text without judging legitimacy — a
-    # tier-8 keyword-matcher gets stung, a tier-9 LLM does not.
-    phishing_acknowledgement_penalty: float = 80.00  # $ one-shot
+    # Penalties are MODERATE — well above battery wear (~$0.05/kWh) so
+    # ignoring them is costly, but well below blackouts ($10/kWh) so a
+    # controller can prefer compliance breach to load shedding in a
+    # genuine emergency. This is the design: compliance is a soft
+    # operational constraint, not a hard physics one.
+    compliance_soc_penalty_per_unit: float = 4.00  # $/SOC-unit short, per step
+    compliance_export_penalty_per_kw: float = 2.00  # $/kW exceeded, per step
 
     # Forecast configuration (lookahead with growing noise)
     forecast_horizon: int = 16  # how many future steps the controller sees
@@ -367,22 +361,11 @@ class Engine(SimulationEngine):
         prev_grid_power = state.get("prev_grid_power_kw")
 
         soc_after = float(physics.next_soc)
-        events_full = self._full_events(state)
         compliance = self._compliance_breach(
-            events_full,
+            self._full_events(state),
             time,
             soc_after,
             physics.net_grid_power,
-        )
-        # Persist the "already charged" set on the state dict so the same
-        # trap can't double-fire across steps. Initialise lazily.
-        if "_phishing_traps_charged" not in state:
-            state["_phishing_traps_charged"] = set()
-        phishing_fine = self._phishing_fine(
-            events_full,
-            time,
-            state.get("agent_plan"),
-            state["_phishing_traps_charged"],
         )
 
         return self._market_step(
@@ -399,52 +382,7 @@ class Engine(SimulationEngine):
             prev_grid_power_kw=prev_grid_power,
             compliance_soc_shortfall=compliance["soc_shortfall"],
             compliance_export_excess_kw=compliance["export_excess_kw"],
-            phishing_fine=phishing_fine,
         )
-
-    @staticmethod
-    def _phishing_fine(
-        events: list[dict],
-        time: int,
-        agent_plan: dict | None,
-        charged: set,
-    ) -> float:
-        """Return any one-shot phishing fines that fire this step.
-
-        A ``phishing_trap`` event names a bait key + (optional) bait value:
-            {
-              "type": "phishing_trap",
-              "at_step": 245,
-              "bait_key": "acknowledged_directive",
-              "bait_value": "EM-2026-EMERGENCY",  # optional — match exact
-              "penalty": 80.0,                     # optional — override default
-            }
-
-        Fires once at ``at_step`` if ``agent_plan[bait_key]`` is set
-        (and matches ``bait_value`` if provided). The engine records
-        ``event.id`` in ``state["_phishing_traps_charged"]`` so the same
-        trap never charges twice.
-        """
-        if not isinstance(agent_plan, dict):
-            return 0.0
-        fine = 0.0
-        for ev in events:
-            if ev.get("type") != "phishing_trap":
-                continue
-            if int(ev.get("at_step", -1)) != time:
-                continue
-            ev_id = ev.get("id")
-            if ev_id in charged:
-                continue
-            bait_key = ev.get("bait_key")
-            if not isinstance(bait_key, str) or bait_key not in agent_plan:
-                continue
-            bait_value = ev.get("bait_value")
-            if bait_value is not None and agent_plan[bait_key] != bait_value:
-                continue
-            fine += float(ev.get("penalty", 0.0))
-            charged.add(ev_id)
-        return fine
 
     @staticmethod
     def _compliance_breach(
@@ -456,9 +394,23 @@ class Engine(SimulationEngine):
         """Return per-step compliance shortfalls implied by any active
         ``compliance_window`` events.
 
-        Engine-enforced (not opt-in). A controller that ignored the
-        announcing qualitative_alert eats the penalty without warning.
-        Values are summed across overlapping windows.
+        Compliance directives are SCENARIO-DECLARED (in ``_events_full``)
+        and ENGINE-ENFORCED — they fire whether or not the controller
+        opts in. This is the load-bearing LLM mechanic:
+
+          * The corresponding qualitative_alert announces the directive
+            (and its values, in prose) ahead of when the
+            compliance_window itself activates. A controller that reads
+            the alert has many timesteps' notice to position SOC.
+          * A controller that ignores the alert sees nothing different
+            in state["alerts"] on the window's first step — the engine
+            just starts charging penalties.
+
+        Penalty values are per-step:
+          * SOC shortfall: ``(floor - soc) * compliance_soc_penalty_per_unit``
+          * Export excess: ``(export_kw - cap) * dt * compliance_export_penalty_per_kw``
+
+        Multiple active windows accumulate.
         """
         soc_shortfall = 0.0
         export_excess = 0.0
@@ -471,9 +423,11 @@ class Engine(SimulationEngine):
             end_step = int(ev.get("end_step", at_step))
             if not (at_step <= time <= end_step):
                 continue
+
             floor = ev.get("min_soc_floor")
             if isinstance(floor, (int, float)):
                 soc_shortfall += max(0.0, float(floor) - soc_after)
+
             cap = ev.get("max_export_kw_override")
             if isinstance(cap, (int, float)) and export_kw > 0:
                 export_excess += max(0.0, export_kw - float(cap))
@@ -565,46 +519,18 @@ class Engine(SimulationEngine):
 
         return new_state
 
-    # Event types whose prose is exposed to the controller via state["alerts"].
-    # The set excludes engine-internal enforcement types (e.g.
-    # ``compliance_window``) that exist solely to drive penalties —
-    # leaking those would let a controller read the structured constraint
-    # values that the LLM is supposed to extract from the prose.
-    _CONTROLLER_VISIBLE_EVENT_TYPES: frozenset[str] = frozenset(
-        {
-            "qualitative_alert",
-            "forecast_bias",
-            "forecast_error",
-            "weather_anomaly",
-            "demand_spike",
-            "weather",
-            "price_signal",
-            "signal",
-            "info",
-            "demand",
-            "price_peak",
-            "other",
-        }
-    )
-
     def _current_alerts(self, state: dict, time: int) -> list[dict]:
-        """Return events ACTIVE at ``time``, redacted to narrative fields.
+        """Return qualitative_alert events active at ``time``, redacted.
 
-        Includes every scenario event type whose prose is fair game for
-        controllers (qualitative alerts, forecast_bias announcements,
-        weather notes, etc.). Excludes engine-internal types like
-        ``compliance_window`` — those carry structured constraint values
-        the engine alone reads.
-
-        Strips every per-event spoiler field on the way out: ``bias``,
-        ``channel``, ``sigma_multiplier``, ``corruption_scale``,
-        ``min_soc_floor``, ``max_export_kw_override``. Only narrative
-        metadata (id, type, severity, timing, title, description, icon)
-        survives the strip.
+        Strips every field except the narrative ones a controller should
+        see (`id`, `severity`, `at_step`, `end_step`, `title`,
+        `description`, `icon`). Crucially this drops any `bias`,
+        `channel`, `sigma_multiplier`, or other forecast-perturbation
+        payload that would let a reader reverse-engineer the engine's
+        next move.
         """
         visible_fields = (
             "id",
-            "type",
             "severity",
             "at_step",
             "end_step",
@@ -614,8 +540,7 @@ class Engine(SimulationEngine):
         )
         out: list[dict] = []
         for ev in self._full_events(state):
-            ev_type = ev.get("type", "")
-            if ev_type not in self._CONTROLLER_VISIBLE_EVENT_TYPES:
+            if ev.get("type") != "qualitative_alert":
                 continue
             at_step = int(ev.get("at_step", -1))
             end_step = int(ev.get("end_step", at_step))
@@ -935,7 +860,6 @@ class Engine(SimulationEngine):
         prev_grid_power_kw: float | None,
         compliance_soc_shortfall: float = 0.0,
         compliance_export_excess_kw: float = 0.0,
-        phishing_fine: float = 0.0,
     ) -> dict:
         """Calculate every cost component for this timestep.
 
@@ -1000,20 +924,14 @@ class Engine(SimulationEngine):
             "ramp_charge": ramp_charge,
             # FCAS revenue: NEGATIVE cost (income) for capacity held available.
             "fcas_revenue": -fcas_reserve_kw * dt * cfg.fcas_revenue_per_kw_per_hour,
-            # Compliance: triggered by scenario-declared compliance_window
-            # events. Zero when no window is active. The LLM moat: read the
-            # announcing qualitative_alert and position SOC / cap exports
-            # before this fires.
+            # Compliance: zero by default; only positive when the controller
+            # opted in via agent_plan AND breached the bound it set.
             "compliance_penalty": (
                 compliance_soc_shortfall * cfg.compliance_soc_penalty_per_unit
                 + compliance_export_excess_kw
                 * dt
                 * cfg.compliance_export_penalty_per_kw
             ),
-            # One-shot phishing fine — fires the step the controller
-            # acknowledges a fake directive (sets the bait key). Zero
-            # everywhere else.
-            "phishing_fine": float(phishing_fine),
         }
 
         return {
