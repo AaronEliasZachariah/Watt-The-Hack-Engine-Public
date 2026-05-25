@@ -392,16 +392,232 @@ def _print_summary(
     print(f"artifacts: {out_dir}")
 
 
+def _disambiguate_names(paths: list[Path]) -> list[str]:
+    """Pick a short unique name for each controller path. Falls back to
+    ``<parent>__<stem>`` for stem collisions (e.g. two ``ctrl.py`` files
+    in different folders)."""
+    stems = [p.stem for p in paths]
+    if len(set(stems)) == len(stems):
+        return stems
+    return [f"{p.parent.name}__{p.stem}" for p in paths]
+
+
+def run_sweep(
+    controller_paths: list[Path],
+    scenario_id: str,
+    out_dir: Path | None = None,
+    plots: bool = True,
+    max_steps: int | None = None,
+    verbose: bool = True,
+) -> dict:
+    """Run several controllers against the same scenario and produce a
+    side-by-side comparison.
+
+    Writes ``runs/sweep_<scenario>_<ts>/`` containing:
+      * one ``<controller_name>/`` per controller (same artifacts
+        ``run_playtest`` writes for solo runs)
+      * ``comparison.csv`` — long-format rows for pandas pivots
+      * ``comparison.png`` — overlay of SOC, cumulative cost, net grid
+      * ``per_controller.png`` — small multiples for forensic inspection
+      * ``summary.json`` — ranked controller scores + breakdowns
+    """
+    if not controller_paths:
+        raise ValueError("controller_paths must be non-empty")
+
+    controller_paths = [Path(p).resolve() for p in controller_paths]
+    names = _disambiguate_names(controller_paths)
+
+    if out_dir is None:
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        out_dir = Path("runs") / f"sweep_{scenario_id}_{ts}"
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    sweep: list[dict] = []
+    for name, path in zip(names, controller_paths):
+        if verbose:
+            print(f"[{name}] running... ", end="", flush=True)
+        sub_out = out_dir / name
+        try:
+            res = run_playtest(
+                controller_path=path,
+                scenario_id=scenario_id,
+                out_dir=sub_out,
+                plots=plots,
+                max_steps=max_steps,
+                verbose=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            if verbose:
+                print(f"FAILED: {exc}")
+            sweep.append({"name": name, "path": str(path), "error": str(exc)})
+            continue
+        score = res["metrics"]["final_score"]
+        if verbose:
+            print(f"score=${score:.2f}")
+        sweep.append(
+            {
+                "name": name,
+                "path": str(path),
+                "metrics": res["metrics"],
+                "breakdown": res["breakdown"],
+                "rows": res["rows"],
+                "out_dir": res["out_dir"],
+            }
+        )
+
+    successful = [s for s in sweep if "rows" in s]
+    if successful:
+        _write_comparison_csv(out_dir / "comparison.csv", successful)
+        _write_sweep_summary_json(out_dir / "summary.json", sweep)
+        if plots:
+            _maybe_write_sweep_plots(out_dir, successful)
+
+    if verbose:
+        _print_ranked_table(sweep, scenario_id, out_dir)
+
+    return {"sweep": sweep, "out_dir": str(out_dir)}
+
+
+def _write_comparison_csv(path: Path, sweep: list[dict]) -> None:
+    if not sweep:
+        return
+    fieldnames = ["controller"] + list(sweep[0]["rows"][0].keys())
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for entry in sweep:
+            for row in entry["rows"]:
+                writer.writerow({"controller": entry["name"], **row})
+
+
+def _write_sweep_summary_json(path: Path, sweep: list[dict]) -> None:
+    payload = []
+    for s in sweep:
+        if "error" in s:
+            payload.append({"controller": s["name"], "error": s["error"]})
+            continue
+        payload.append(
+            {
+                "controller": s["name"],
+                "final_score": s["metrics"]["final_score"],
+                "renewable_ratio": s["metrics"]["renewable_ratio"],
+                "unmet_demand_total": s["metrics"]["unmet_demand_total"],
+                "controller_errors": s["metrics"].get("controller_errors", 0),
+                "cost_breakdown": {
+                    k: round(v, 4) for k, v in s["breakdown"].items() if k != "total"
+                },
+            }
+        )
+    payload.sort(key=lambda d: d.get("final_score", float("inf")))
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _maybe_write_sweep_plots(out_dir: Path, sweep: list[dict]) -> None:
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt  # noqa: E402
+    except ImportError:
+        print(
+            "  [plots] matplotlib not installed; skipping sweep PNGs.",
+            file=sys.stderr,
+        )
+        return
+    if not sweep:
+        return
+
+    cmap = plt.get_cmap("tab10")
+    colors = [cmap(i % 10) for i in range(len(sweep))]
+
+    # 1. comparison.png — three stacked overlays
+    fig, axes = plt.subplots(3, 1, figsize=(11, 9), sharex=True)
+    for entry, color in zip(sweep, colors):
+        rows = entry["rows"]
+        t = [r["time_hours"] for r in rows]
+        label = f"{entry['name']}  (${entry['metrics']['final_score']:.0f})"
+        axes[0].plot(t, [r["soc"] for r in rows], label=label, color=color)
+        axes[1].plot(t, [r["cum_cost"] for r in rows], label=label, color=color)
+        axes[2].plot(t, [r["net_grid_power_kw"] for r in rows], label=label, color=color)
+    axes[0].set_ylabel("SOC")
+    axes[0].set_ylim(0, 1)
+    axes[1].set_ylabel("cumulative cost ($)")
+    axes[2].set_ylabel("net grid kW (+imp / -exp)")
+    axes[2].set_xlabel("hours")
+    for ax in axes:
+        ax.grid(True, alpha=0.3)
+    axes[0].legend(loc="upper right", fontsize=8, ncol=min(2, len(sweep)))
+    fig.suptitle("Sweep comparison")
+    fig.tight_layout()
+    fig.savefig(out_dir / "comparison.png", dpi=120)
+    plt.close(fig)
+
+    # 2. per_controller.png — small multiples, one row per controller
+    n = len(sweep)
+    fig, axes = plt.subplots(n, 2, figsize=(12, 2.6 * n), sharex=True, squeeze=False)
+    for i, (entry, color) in enumerate(zip(sweep, colors)):
+        rows = entry["rows"]
+        t = [r["time_hours"] for r in rows]
+        score = entry["metrics"]["final_score"]
+
+        ax = axes[i, 0]
+        ax.plot(t, [r["soc"] for r in rows], color=color)
+        ax.set_ylim(0, 1)
+        ax.set_ylabel("SOC")
+        ax.grid(True, alpha=0.3)
+        ax.set_title(f"{entry['name']}  -  ${score:.2f}", loc="left", fontsize=10)
+
+        ax = axes[i, 1]
+        ax.plot(t, [r["battery_flow_kw"] for r in rows], label="battery", color="tab:blue")
+        ax.plot(t, [r["emergency_generator_kw"] for r in rows], label="diesel", color="tab:red")
+        ax.plot(t, [r["curtail_solar_kw"] for r in rows], label="curtail", color="tab:green", linestyle="--")
+        ax.set_ylabel("kW")
+        ax.grid(True, alpha=0.3)
+        if i == 0:
+            ax.legend(loc="upper right", fontsize=8)
+    axes[-1, 0].set_xlabel("hours")
+    axes[-1, 1].set_xlabel("hours")
+    fig.suptitle("Per-controller forensics")
+    fig.tight_layout()
+    fig.savefig(out_dir / "per_controller.png", dpi=120)
+    plt.close(fig)
+
+
+def _print_ranked_table(sweep: list[dict], scenario_id: str, out_dir: Path) -> None:
+    print()
+    print(f"Sweep results: {scenario_id}")
+    print("-" * 78)
+    print(f"  {'rank':>4}  {'controller':<28s}  {'final_score':>12s}  top cost components")
+    print("-" * 78)
+
+    ok = [s for s in sweep if "metrics" in s]
+    bad = [s for s in sweep if "error" in s]
+    ok.sort(key=lambda s: s["metrics"]["final_score"])
+
+    for rank, s in enumerate(ok, 1):
+        score = s["metrics"]["final_score"]
+        bd = {k: v for k, v in s["breakdown"].items() if k != "total"}
+        top = sorted(bd.items(), key=lambda kv: -abs(kv[1]))[:3]
+        top_str = ", ".join(f"{k}=${v:.0f}" for k, v in top)
+        print(f"  {rank:>4}  {s['name']:<28s}  ${score:>10.2f}    {top_str}")
+    for s in bad:
+        print(f"  {'!':>4}  {s['name']:<28s}  {'ERROR':>12s}    {s['error']}")
+    print("-" * 78)
+    print(f"artifacts: {out_dir}")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m watt_the_hack.playtest",
-        description="Run a controller against a Watt The Hack scenario locally.",
+        description="Run one or more controllers against a Watt The Hack scenario locally.",
     )
     p.add_argument(
         "controller",
-        nargs="?",
+        nargs="*",
         type=Path,
-        help="Path to a .py file containing a `Strategy` class or `controller` function.",
+        help="Path(s) to .py files containing a `Strategy` class or `controller` function. "
+             "Pass multiple paths (or a shell glob like `probes/*.py`) for a side-by-side sweep.",
     )
     p.add_argument(
         "--scenario",
@@ -452,22 +668,32 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {s['id']:<{width}s}  {s['pool']:<10s} {s['title']}")
         return 0
 
-    if args.controller is None or args.scenario is None:
+    if not args.controller or args.scenario is None:
         print(
-            "Usage: python -m watt_the_hack.playtest <controller.py> --scenario <id>\n"
+            "Usage: python -m watt_the_hack.playtest <controller.py> [more.py ...] --scenario <id>\n"
             "       python -m watt_the_hack.playtest --list-scenarios",
             file=sys.stderr,
         )
         return 2
 
-    run_playtest(
-        controller_path=args.controller,
-        scenario_id=args.scenario,
-        out_dir=args.out,
-        plots=not args.no_plots,
-        max_steps=args.steps,
-        verbose=not args.quiet,
-    )
+    if len(args.controller) == 1:
+        run_playtest(
+            controller_path=args.controller[0],
+            scenario_id=args.scenario,
+            out_dir=args.out,
+            plots=not args.no_plots,
+            max_steps=args.steps,
+            verbose=not args.quiet,
+        )
+    else:
+        run_sweep(
+            controller_paths=args.controller,
+            scenario_id=args.scenario,
+            out_dir=args.out,
+            plots=not args.no_plots,
+            max_steps=args.steps,
+            verbose=not args.quiet,
+        )
     return 0
 
 

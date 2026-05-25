@@ -688,18 +688,48 @@ class Engine(SimulationEngine):
 
         return new_state
 
-    def _current_alerts(self, state: dict, time: int) -> list[dict]:
-        """Return qualitative_alert events active at ``time``, redacted.
+    # Event types whose prose is exposed to the controller via
+    # state["alerts"]. The set EXCLUDES engine-internal enforcement
+    # types (compliance_window, phishing_trap, diesel_ban_window) that
+    # exist solely to drive penalties — leaking those would let a
+    # controller read the structured constraint values that the LLM
+    # is supposed to extract from the prose. All narrative event
+    # types — qualitative_alert, forecast_bias announcements, weather
+    # notes, demand spikes — go through.
+    _CONTROLLER_VISIBLE_EVENT_TYPES: frozenset[str] = frozenset(
+        {
+            "qualitative_alert",
+            "forecast_bias",
+            "forecast_error",
+            "weather_anomaly",
+            "weather",
+            "demand_spike",
+            "demand",
+            "price_signal",
+            "price_peak",
+            "signal",
+            "info",
+            "other",
+        }
+    )
 
-        Strips every field except the narrative ones a controller should
-        see (`id`, `severity`, `at_step`, `end_step`, `title`,
-        `description`, `icon`). Crucially this drops any `bias`,
-        `channel`, `sigma_multiplier`, or other forecast-perturbation
-        payload that would let a reader reverse-engineer the engine's
-        next move.
+    def _current_alerts(self, state: dict, time: int) -> list[dict]:
+        """Return events ACTIVE at ``time``, redacted to narrative fields.
+
+        Includes every scenario event type on the controller-visible
+        allowlist (qualitative alerts, forecast_bias announcements,
+        weather notes, demand spikes). Excludes engine-internal types
+        (compliance_window, phishing_trap, diesel_ban_window).
+
+        Strips every per-event spoiler field on the way out: ``bias``,
+        ``channel``, ``sigma_multiplier``, ``corruption_scale``,
+        ``min_soc_floor``, ``max_export_kw_override``, ``directive_id``,
+        ``bait_key``, ``bait_value``, ``penalty``. Only narrative
+        metadata survives the strip.
         """
         visible_fields = (
             "id",
+            "type",
             "severity",
             "at_step",
             "end_step",
@@ -709,7 +739,7 @@ class Engine(SimulationEngine):
         )
         out: list[dict] = []
         for ev in self._full_events(state):
-            if ev.get("type") != "qualitative_alert":
+            if ev.get("type") not in self._CONTROLLER_VISIBLE_EVENT_TYPES:
                 continue
             at_step = int(ev.get("at_step", -1))
             end_step = int(ev.get("end_step", at_step))
