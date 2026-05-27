@@ -17,6 +17,9 @@ api = [
     "fastapi",
     "uvicorn",
 ]
+playtest = [
+    "matplotlib>=3.5",
+]
 test = [
     "pytest",
     "pytest-cov",
