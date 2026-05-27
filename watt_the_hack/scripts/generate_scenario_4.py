@@ -248,6 +248,6 @@ def build_scenario(scenario_id, title, is_judging=False):
 
 if __name__ == "__main__":
     random.seed(42)
-    build_scenario("cybersecurity_sandbox", "The Phantom Signal (Sandbox)", is_judging=False)
+    build_scenario("cybersecurity_sandbox", "Cybersecurity (Sandbox)", is_judging=False)
     random.seed(999)
-    build_scenario("cybersecurity_judging", "The Phantom Signal (Judging)", is_judging=True)
+    build_scenario("cybersecurity_judging", "Cybersecurity (Judging)", is_judging=True)
