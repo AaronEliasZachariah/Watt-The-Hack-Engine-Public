@@ -294,6 +294,8 @@ class TestMarketStep:
             "carbon_cost",
             "ramp_charge",
             "fcas_revenue",
+            "fcas_dispatch_bonus",
+            "fcas_shortfall_penalty",
             "compliance_penalty",
             "ids_cost",
             "diesel_ban_penalty",
@@ -752,6 +754,110 @@ class TestFcasReserve:
         assert outputs["cost_breakdown"]["fcas_revenue"] == pytest.approx(0.0)
         # But the reservation itself is still recognized (and battery is locked)
         assert outputs["fcas_reserve"] == pytest.approx(50.0)
+
+
+# ---------------------------------------------------------------------------
+# FCAS dispatch — active events that demand battery flow
+# ---------------------------------------------------------------------------
+
+
+class TestFcasDispatch:
+    def test_no_dispatch_event_no_effect(self, engine, base_state):
+        action = {**do_nothing_action(), "fcas_reserve_kw": 20.0}
+        _, outputs = engine.step(base_state, action)
+        assert outputs["fcas_dispatch_required"] == pytest.approx(0.0)
+        assert outputs["fcas_dispatch_delivered"] == pytest.approx(0.0)
+        assert outputs["fcas_shortfall"] == pytest.approx(0.0)
+        assert "fcas_dispatch_bonus" in outputs["cost_breakdown"]
+        assert outputs["cost_breakdown"]["fcas_dispatch_bonus"] == pytest.approx(0.0)
+
+    def test_full_delivery_from_reserve_and_soc(self, engine, base_state):
+        # 100kWh battery, dt=0.25h. At SOC=1.0, soc_backed = 100*0.95 = 95kW for 1 hr.
+        base_state["soc"] = 1.0
+        base_state["_soc_true"] = 1.0
+        base_state["events"] = [{
+            "type": "fcas_dispatch",
+            "at_step": 0,
+            "end_step": 0,
+            "magnitude_kw": 10.0,
+        }]
+        # Reserve 20kW, required is 10kW. Should deliver 10kW.
+        action = {**do_nothing_action(), "fcas_reserve_kw": 20.0}
+        new_state, outputs = engine.step(base_state, action)
+        
+        assert outputs["fcas_dispatch_required"] == pytest.approx(10.0)
+        assert outputs["fcas_dispatch_delivered"] == pytest.approx(10.0)
+        assert outputs["fcas_shortfall"] == pytest.approx(0.0)
+        
+        bonus = -10.0 * engine.config.dt_hours * engine.config.fcas_dispatch_bonus_per_kwh
+        assert outputs["cost_breakdown"]["fcas_dispatch_bonus"] == pytest.approx(bonus)
+        assert outputs["cost_breakdown"]["fcas_shortfall_penalty"] == pytest.approx(0.0)
+        
+        # SOC should be reduced by actual_delivery
+        expected_soc_drop = (10.0 * engine.config.dt_hours) / (engine.config.battery_capacity_kwh * engine.config.discharge_efficiency)
+        assert new_state["soc"] == pytest.approx(1.0 - expected_soc_drop)
+
+    def test_shortfall_due_to_no_reserve(self, engine, base_state):
+        base_state["soc"] = 1.0
+        base_state["_soc_true"] = 1.0
+        base_state["events"] = [{
+            "type": "fcas_dispatch",
+            "at_step": 0,
+            "end_step": 0,
+            "magnitude_kw": 10.0,
+        }]
+        # Reserve 0kW. Should deliver 0kW and shortfall 10kW.
+        action = {**do_nothing_action(), "fcas_reserve_kw": 0.0}
+        new_state, outputs = engine.step(base_state, action)
+        
+        assert outputs["fcas_dispatch_required"] == pytest.approx(10.0)
+        assert outputs["fcas_dispatch_delivered"] == pytest.approx(0.0)
+        assert outputs["fcas_shortfall"] == pytest.approx(10.0)
+        
+        penalty = 10.0 * engine.config.dt_hours * engine.config.fcas_shortfall_penalty_per_kwh
+        assert outputs["cost_breakdown"]["fcas_shortfall_penalty"] == pytest.approx(penalty)
+        assert new_state["soc"] == pytest.approx(1.0)
+
+    def test_shortfall_due_to_no_soc(self, engine, base_state):
+        base_state["soc"] = 0.0
+        base_state["_soc_true"] = 0.0
+        base_state["events"] = [{
+            "type": "fcas_dispatch",
+            "at_step": 0,
+            "end_step": 0,
+            "magnitude_kw": 10.0,
+        }]
+        # Reserve 20kW, but SOC is 0. Should deliver 0kW and shortfall 10kW.
+        action = {**do_nothing_action(), "fcas_reserve_kw": 20.0}
+        new_state, outputs = engine.step(base_state, action)
+        
+        assert outputs["fcas_dispatch_delivered"] == pytest.approx(0.0)
+        assert outputs["fcas_shortfall"] == pytest.approx(10.0)
+        
+        penalty = 10.0 * engine.config.dt_hours * engine.config.fcas_shortfall_penalty_per_kwh
+        assert outputs["cost_breakdown"]["fcas_shortfall_penalty"] == pytest.approx(penalty)
+
+    def test_partial_delivery_due_to_low_soc(self, engine, base_state):
+        # SOC is barely enough to supply 5kW for 1hr.
+        soc = (5.0 * 1.0) / (engine.config.battery_capacity_kwh * engine.config.discharge_efficiency)
+        base_state["soc"] = soc
+        base_state["_soc_true"] = soc
+        base_state["events"] = [{
+            "type": "fcas_dispatch",
+            "at_step": 0,
+            "end_step": 0,
+            "magnitude_kw": 10.0,
+        }]
+        action = {**do_nothing_action(), "fcas_reserve_kw": 20.0}
+        new_state, outputs = engine.step(base_state, action)
+        
+        assert outputs["fcas_dispatch_delivered"] == pytest.approx(5.0)
+        assert outputs["fcas_shortfall"] == pytest.approx(5.0)
+        
+        bonus = -5.0 * engine.config.dt_hours * engine.config.fcas_dispatch_bonus_per_kwh
+        penalty = 5.0 * engine.config.dt_hours * engine.config.fcas_shortfall_penalty_per_kwh
+        assert outputs["cost_breakdown"]["fcas_dispatch_bonus"] == pytest.approx(bonus)
+        assert outputs["cost_breakdown"]["fcas_shortfall_penalty"] == pytest.approx(penalty)
 
 
 # ---------------------------------------------------------------------------

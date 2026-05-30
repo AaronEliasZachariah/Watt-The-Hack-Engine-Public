@@ -17,6 +17,9 @@ class PhysicsResult:
     unmet_demand: float  # kW above the import limit (blackout)
     overvoltage_kw: float  # kW below the negative export limit (overvoltage)
     fcas_reserve_kw: float  # actual capacity reserved for FCAS revenue
+    fcas_dispatch_required_kw: float = 0.0
+    fcas_dispatch_delivered_kw: float = 0.0
+    fcas_shortfall_kw: float = 0.0
 
 
 @dataclass(slots=True)
@@ -30,6 +33,11 @@ class SimulationConfig:
     charge_efficiency: float = 0.95
     discharge_efficiency: float = 0.95
     dt_hours: float = 0.25
+
+    # FCAS Dispatch Penalties and Bonuses
+    fcas_shortfall_penalty_per_kwh: float = 20.0
+    fcas_dispatch_bonus_per_kwh: float = 0.20
+
 
     # Phase 3 Realism: Split Pricing & Penalties
     export_tariff: float = 50.0  # $50.00 flat rate for exporting solar (was 0.05)
@@ -186,6 +194,8 @@ _CONTROLLER_PUBLIC_KEYS: frozenset[str] = frozenset(
         "prev_grid_power_kw",
         "battery_throughput_remaining_kwh",
         "battery_throughput_budget_kwh",
+        "fcas_events_upcoming",
+
         # Channels for agentic strategies
         "agent_plan",
         # Currently-firing qualitative alerts (redacted; no bias/sigma payload)
@@ -419,6 +429,37 @@ class Engine(SimulationEngine):
             state.get("agent_plan"),
             state.setdefault("_phishing_traps_charged", set()),
         )
+        
+        # Calculate FCAS Dispatch Logic (mutate physics next_soc)
+        required_kw = 0.0
+        for ev in events_full:
+            if ev.get("type") == "fcas_dispatch":
+                at_step = int(ev.get("at_step", -1))
+                end_step = int(ev.get("end_step", at_step))
+                if at_step <= time <= end_step:
+                    required_kw += float(ev.get("magnitude_kw", 0.0))
+        
+        deliverable_kw = 0.0
+        actual_delivery = 0.0
+        shortfall = 0.0
+        
+        if required_kw > 0:
+            # How much can we sustain for 1 hour from current SOC?
+            soc_backed_capacity = (soc_after * self.config.battery_capacity_kwh * self.config.discharge_efficiency) / 1.0 
+            deliverable_kw = min(physics.fcas_reserve_kw, soc_backed_capacity)
+            actual_delivery = min(deliverable_kw, required_kw)
+            shortfall = max(0.0, required_kw - actual_delivery)
+            
+            # Reduce SOC by the energy delivered
+            if actual_delivery > 0:
+                physics.next_soc -= (actual_delivery * self.config.dt_hours) / (
+                    self.config.battery_capacity_kwh * self.config.discharge_efficiency
+                )
+                physics.next_soc = max(0.0, physics.next_soc)
+                
+        physics.fcas_dispatch_required_kw = required_kw
+        physics.fcas_dispatch_delivered_kw = actual_delivery
+        physics.fcas_shortfall_kw = shortfall
 
         return self._market_step(
             net_grid_power=physics.net_grid_power,
@@ -428,6 +469,8 @@ class Engine(SimulationEngine):
             overvoltage_kw=physics.overvoltage_kw,
             battery_kw=physics.battery_kw,
             fcas_reserve_kw=physics.fcas_reserve_kw,
+            fcas_dispatch_delivered_kw=actual_delivery,
+            fcas_shortfall_kw=shortfall,
             new_peak_import_kw=new_peak,
             prev_peak_import_kw=prev_peak,
             grid_co2_intensity=grid_co2,
@@ -643,6 +686,9 @@ class Engine(SimulationEngine):
             "emergency_generator": physics.emergency_generator_kw,
             "curtailed_solar": physics.curtailed_solar_kw,
             "fcas_reserve": physics.fcas_reserve_kw,
+            "fcas_dispatch_required": physics.fcas_dispatch_required_kw,
+            "fcas_dispatch_delivered": physics.fcas_dispatch_delivered_kw,
+            "fcas_shortfall": physics.fcas_shortfall_kw,
             "import_price": float(import_price),
             "export_price": float(self.config.export_tariff),
             "step_cost": float(cost_breakdown["total"]),
@@ -729,6 +775,8 @@ class Engine(SimulationEngine):
             new_state["ids_signal"] = max(0.0, min(1.0, raw))
         else:
             new_state["ids_signal"] = None
+            
+        new_state["fcas_events_upcoming"] = self._future_fcas_events(state, next_time)
 
         return new_state
 
@@ -790,6 +838,21 @@ class Engine(SimulationEngine):
             if at_step <= time <= end_step:
                 out.append({k: ev.get(k) for k in visible_fields if k in ev})
         return out
+        
+    def _future_fcas_events(self, state: dict, time: int) -> list[dict]:
+        """Return upcoming fcas_dispatch events to controllers."""
+        out = []
+        for ev in self._full_events(state):
+            if ev.get("type") == "fcas_dispatch":
+                at_step = int(ev.get("at_step", -1))
+                end_step = int(ev.get("end_step", at_step))
+                if end_step >= time:
+                    out.append({
+                        "at_step": at_step,
+                        "end_step": end_step,
+                        "magnitude_kw": float(ev.get("magnitude_kw", 0.0))
+                    })
+        return sorted(out, key=lambda x: x["at_step"])
 
     def add_forecast_to_state(self, state: dict) -> dict:
         """Inject state["forecast"] and state["alerts"] for the current
@@ -824,6 +887,7 @@ class Engine(SimulationEngine):
         # Surface any qualitative alerts firing at t=0 so the controller's
         # plan()/first step() call can react to them.
         state["alerts"] = self._current_alerts(state, time)
+        state["fcas_events_upcoming"] = self._future_fcas_events(state, time)
         return state
 
     def _corrupt_sensor(self, state: dict, channel: str, val: float, time: int) -> float:
@@ -1143,6 +1207,8 @@ class Engine(SimulationEngine):
         overvoltage_kw: float,
         battery_kw: float,
         fcas_reserve_kw: float,
+        fcas_dispatch_delivered_kw: float = 0.0,
+        fcas_shortfall_kw: float = 0.0,
         prev_peak_import_kw: float,
         new_peak_import_kw: float,
         grid_co2_intensity: float,
@@ -1234,6 +1300,8 @@ class Engine(SimulationEngine):
             "diesel_ban_penalty": (
                 diesel_ban_penalty_kwh * cfg.diesel_ban_penalty_per_kwh
             ),
+            "fcas_dispatch_bonus": -fcas_dispatch_delivered_kw * dt * cfg.fcas_dispatch_bonus_per_kwh,
+            "fcas_shortfall_penalty": fcas_shortfall_kw * dt * cfg.fcas_shortfall_penalty_per_kwh,
             "phishing_fine": phishing_fine,
         }
 
