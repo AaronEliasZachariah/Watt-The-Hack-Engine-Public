@@ -98,7 +98,7 @@ def build_scenario(scenario_id, title, is_judging=False):
             if "end" not in a:
                 a["end"] = a["start"] + a["end_offset"]
 
-    # True attacks spike demand above the 120 kW import cap (sandbox + judging).
+    # True attacks spike demand above the 120 MW import cap (sandbox + judging).
     for a in attacks:
         if a["is_true"]:
             for t in range(a["start"], a["end"] + 1):

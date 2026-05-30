@@ -33,7 +33,7 @@ def base_state() -> dict:
 
 def do_nothing_action() -> dict:
     return {
-        "battery_flow_kw": 0.0,
+        "battery_flow_mw": 0.0,
         "emergency_generator": 0.0,
         "curtail_solar": 0.0,
     }
@@ -59,7 +59,7 @@ class TestBasicStep:
         expected = {
             "net_grid_power",
             "unmet_demand",
-            "overvoltage_kw",
+            "overvoltage_mw",
             "battery_dispatch",
             "emergency_generator",
             "curtailed_solar",
@@ -83,14 +83,14 @@ class TestGridPowerBalance:
 
     def test_battery_discharge_reduces_grid_import(self, engine, base_state):
         action = do_nothing_action()
-        action["battery_flow_kw"] = 10.0  # discharge 10kW
+        action["battery_flow_mw"] = 10.0  # discharge 10kW
         _, outputs = engine.step(base_state, action)
         # net_grid = demand - solar - battery = 50 - 30 - 10 = 10
         assert outputs["net_grid_power"] == pytest.approx(10.0)
 
     def test_battery_charge_increases_grid_import(self, engine, base_state):
         action = do_nothing_action()
-        action["battery_flow_kw"] = -10.0  # charge 10kW
+        action["battery_flow_mw"] = -10.0  # charge 10kW
         _, outputs = engine.step(base_state, action)
         # net_grid = demand - solar - (-10) = 50 - 30 + 10 = 30
         assert outputs["net_grid_power"] == pytest.approx(30.0)
@@ -104,37 +104,37 @@ class TestGridPowerBalance:
 class TestBatteryPhysics:
     def test_soc_decreases_on_discharge(self, engine, base_state):
         action = do_nothing_action()
-        action["battery_flow_kw"] = 10.0
+        action["battery_flow_mw"] = 10.0
         new_state, _ = engine.step(base_state, action)
         assert new_state["soc"] < base_state["soc"]
 
     def test_soc_increases_on_charge(self, engine, base_state):
         action = do_nothing_action()
-        action["battery_flow_kw"] = -10.0
+        action["battery_flow_mw"] = -10.0
         new_state, _ = engine.step(base_state, action)
         assert new_state["soc"] > base_state["soc"]
 
     def test_empty_battery_cannot_discharge(self, engine, base_state):
         base_state["soc"] = 0.0
         action = do_nothing_action()
-        action["battery_flow_kw"] = 50.0
+        action["battery_flow_mw"] = 50.0
         _, outputs = engine.step(base_state, action)
         assert outputs["battery_dispatch"] == pytest.approx(0.0)
 
     def test_full_battery_cannot_charge(self, engine, base_state):
         base_state["soc"] = 1.0
         action = do_nothing_action()
-        action["battery_flow_kw"] = -50.0
+        action["battery_flow_mw"] = -50.0
         _, outputs = engine.step(base_state, action)
         assert outputs["battery_dispatch"] == pytest.approx(0.0)
 
     def test_inverter_clipping(self, engine, base_state):
-        """Requested kW beyond inverter max is clipped."""
+        """Requested MW beyond inverter max is clipped."""
         action = do_nothing_action()
-        action["battery_flow_kw"] = 999.0
+        action["battery_flow_mw"] = 999.0
         _, outputs = engine.step(base_state, action)
         # Actual dispatch is limited by inverter AND available energy
-        assert outputs["battery_dispatch"] <= engine.config.max_inverter_kw
+        assert outputs["battery_dispatch"] <= engine.config.max_inverter_mw
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +157,7 @@ class TestGridLimits:
         _, outputs = engine.step(state, do_nothing_action())
         assert outputs["unmet_demand"] > 0.0
         assert outputs["net_grid_power"] == pytest.approx(
-            engine.config.grid_max_import_kw
+            engine.config.grid_max_import_mw
         )
 
     def test_export_limit_causes_overvoltage(self, engine):
@@ -172,7 +172,7 @@ class TestGridLimits:
             "price": 0.24,
         }
         _, outputs = engine.step(state, do_nothing_action())
-        assert outputs["overvoltage_kw"] > 0.0
+        assert outputs["overvoltage_mw"] > 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +215,7 @@ class TestEmergencyGenerator:
         action["emergency_generator"] = 999.0
         _, outputs = engine.step(base_state, action)
         assert outputs["emergency_generator"] == pytest.approx(
-            engine.config.max_emergency_generator_kw
+            engine.config.max_emergency_generator_mw
         )
 
 
@@ -296,6 +296,7 @@ class TestMarketStep:
             "fcas_revenue",
             "fcas_dispatch_bonus",
             "fcas_shortfall_penalty",
+            "fcas_ramp_charge",
             "compliance_penalty",
             "ids_cost",
             "diesel_ban_penalty",
@@ -321,26 +322,26 @@ class TestBatteryWear:
         assert outputs["cost_breakdown"]["battery_wear"] == pytest.approx(0.0)
 
     def test_wear_proportional_to_throughput(self, engine, base_state):
-        """Wear = |battery_kw| * dt_hours * wear_cost_per_kwh."""
+        """Wear = |battery_mw| * dt_hours * wear_cost_per_mwh."""
         action = {
-            "battery_flow_kw": 20.0,
+            "battery_flow_mw": 20.0,
             "emergency_generator": 0.0,
             "curtail_solar": 0.0,
         }
         _, outputs = engine.step(base_state, action)
         cfg = engine.config
-        expected_wear = abs(20.0) * cfg.dt_hours * cfg.battery_wear_cost_per_kwh
+        expected_wear = abs(20.0) * cfg.dt_hours * cfg.battery_wear_cost_per_mwh
         assert outputs["cost_breakdown"]["battery_wear"] == pytest.approx(expected_wear)
 
     def test_wear_symmetric_for_charge_and_discharge(self, engine, base_state):
         """Charging and discharging at the same magnitude wear the battery equally."""
         discharge = {
-            "battery_flow_kw": 20.0,
+            "battery_flow_mw": 20.0,
             "emergency_generator": 0.0,
             "curtail_solar": 0.0,
         }
         charge = {
-            "battery_flow_kw": -20.0,
+            "battery_flow_mw": -20.0,
             "emergency_generator": 0.0,
             "curtail_solar": 0.0,
         }
@@ -352,10 +353,10 @@ class TestBatteryWear:
 
     def test_wear_uses_actual_dispatch_after_clipping(self, engine, base_state):
         """Wear is based on what the battery actually moved (post-clip), not requested."""
-        # Empty SOC, request 50 kW discharge — actual dispatch will be 0
+        # Empty SOC, request 50 MW discharge — actual dispatch will be 0
         empty_state = {**base_state, "soc": 0.0}
         action = {
-            "battery_flow_kw": 50.0,
+            "battery_flow_mw": 50.0,
             "emergency_generator": 0.0,
             "curtail_solar": 0.0,
         }
@@ -368,7 +369,7 @@ class TestBatteryWear:
         equals exactly the wear cost (other components unchanged)."""
         idle_action = do_nothing_action()
         cycle_action = {
-            "battery_flow_kw": 10.0,
+            "battery_flow_mw": 10.0,
             "emergency_generator": 0.0,
             "curtail_solar": 0.0,
         }
@@ -396,8 +397,8 @@ class TestDemandCharge:
     def test_first_step_charges_full_peak(self, engine, base_state):
         """First step's import is by definition a new peak — bill it."""
         _, outputs = engine.step(base_state, do_nothing_action())
-        import_kw = max(0.0, outputs["net_grid_power"])
-        expected = import_kw * engine.config.demand_charge_per_kw
+        import_mw = max(0.0, outputs["net_grid_power"])
+        expected = import_mw * engine.config.demand_charge_per_mw
         assert outputs["cost_breakdown"]["demand_charge"] == pytest.approx(expected)
 
     def test_no_charge_below_existing_peak(self, engine):
@@ -410,10 +411,10 @@ class TestDemandCharge:
             "profiles": {"demand": [30.0, 30.0], "solar": [10.0, 10.0]},
             "price_profile": [0.24, 0.24],
             "price": 0.24,
-            "peak_import_kw": 100.0,  # already established
+            "peak_import_mw": 100.0,  # already established
         }
         _, outputs = engine.step(state, do_nothing_action())
-        # net_grid = 30-10 = 20 kW, well below peak 100 → no new charge
+        # net_grid = 30-10 = 20 MW, well below peak 100 → no new charge
         assert outputs["cost_breakdown"]["demand_charge"] == pytest.approx(0.0)
 
     def test_charges_only_the_delta_when_peak_grows(self, engine):
@@ -426,11 +427,11 @@ class TestDemandCharge:
             "profiles": {"demand": [60.0, 60.0], "solar": [10.0, 10.0]},
             "price_profile": [0.24, 0.24],
             "price": 0.24,
-            "peak_import_kw": 30.0,  # prior peak
+            "peak_import_mw": 30.0,  # prior peak
         }
         _, outputs = engine.step(state, do_nothing_action())
-        # net_grid = 60-10 = 50 kW. Delta above prior peak = 50-30 = 20.
-        expected = 20.0 * engine.config.demand_charge_per_kw
+        # net_grid = 60-10 = 50 MW. Delta above prior peak = 50-30 = 20.
+        expected = 20.0 * engine.config.demand_charge_per_mw
         assert outputs["cost_breakdown"]["demand_charge"] == pytest.approx(expected)
 
     def test_export_does_not_count_toward_peak(self, engine):
@@ -443,18 +444,18 @@ class TestDemandCharge:
             "profiles": {"demand": [10.0, 10.0], "solar": [50.0, 50.0]},
             "price_profile": [0.24, 0.24],
             "price": 0.24,
-            "peak_import_kw": 0.0,
+            "peak_import_mw": 0.0,
         }
         new_state, outputs = engine.step(state, do_nothing_action())
         assert outputs["net_grid_power"] < 0
         assert outputs["cost_breakdown"]["demand_charge"] == pytest.approx(0.0)
-        assert new_state["peak_import_kw"] == pytest.approx(0.0)
+        assert new_state["peak_import_mw"] == pytest.approx(0.0)
 
     def test_peak_carries_through_state(self, engine, base_state):
-        """new_state['peak_import_kw'] equals max(prev_peak, current_import)."""
+        """new_state['peak_import_mw'] equals max(prev_peak, current_import)."""
         new_state, outputs = engine.step(base_state, do_nothing_action())
         expected = max(0.0, outputs["net_grid_power"])
-        assert new_state["peak_import_kw"] == pytest.approx(expected)
+        assert new_state["peak_import_mw"] == pytest.approx(expected)
 
     def test_running_total_equals_peak_times_rate_for_demand(self, engine):
         """Over many steps, accumulated demand charges equal peak_import × rate."""
@@ -469,7 +470,7 @@ class TestDemandCharge:
             "profiles": {"demand": demand_profile, "solar": [0.0] * steps},
             "price_profile": [0.24] * steps,
             "price": 0.24,
-            "peak_import_kw": 0.0,
+            "peak_import_mw": 0.0,
         }
         total_demand_charge = 0.0
         peak = 0.0
@@ -477,10 +478,10 @@ class TestDemandCharge:
             state, outputs = engine.step(state, do_nothing_action())
             total_demand_charge += outputs["cost_breakdown"]["demand_charge"]
             peak = max(peak, max(0.0, outputs["net_grid_power"]))
-        expected = peak * engine.config.demand_charge_per_kw
+        expected = peak * engine.config.demand_charge_per_mw
         assert total_demand_charge == pytest.approx(expected)
         # Final state's peak should match observed peak
-        assert state["peak_import_kw"] == pytest.approx(peak)
+        assert state["peak_import_mw"] == pytest.approx(peak)
 
 
 # ---------------------------------------------------------------------------
@@ -493,9 +494,9 @@ class TestCarbonCost:
         """Importing power is charged at grid_co2_intensity × carbon_price."""
         _, outputs = engine.step(base_state, do_nothing_action())
         cfg = engine.config
-        import_kwh = max(0.0, outputs["net_grid_power"]) * cfg.dt_hours
+        import_mwh = max(0.0, outputs["net_grid_power"]) * cfg.dt_hours
         expected = (
-            import_kwh * cfg.grid_co2_intensity_kg_per_kwh * cfg.carbon_price_per_kg
+            import_mwh * cfg.grid_co2_intensity_kg_per_mwh * cfg.carbon_price_per_kg
         )
         assert outputs["cost_breakdown"]["carbon_cost"] == pytest.approx(expected)
 
@@ -521,7 +522,7 @@ class TestCarbonCost:
             "carbon_cost"
         ]
         diesel_action = {
-            "battery_flow_kw": 0.0,
+            "battery_flow_mw": 0.0,
             "emergency_generator": 20.0,
             "curtail_solar": 0.0,
         }
@@ -529,7 +530,7 @@ class TestCarbonCost:
             "carbon_cost"
         ]
 
-        # Diesel covers 20 kW of demand → reduces import by 20 kW. So:
+        # Diesel covers 20 MW of demand → reduces import by 20 MW. So:
         #   imports drop by 20 * dt → carbon from imports drops
         #   diesel adds 20 * dt of its own emissions
         # Net depends on (diesel_intensity - grid_intensity) sign.
@@ -583,12 +584,12 @@ class TestRampCharge:
             "price": 0.24,
         }
         state, _ = engine.step(state, do_nothing_action())
-        # Now prev_grid_power_kw is set; second step should produce same grid_power
+        # Now prev_grid_power_mw is set; second step should produce same grid_power
         _, second = engine.step(state, do_nothing_action())
         assert second["cost_breakdown"]["ramp_charge"] == pytest.approx(0.0)
 
     def test_ramp_charge_quadratic(self, engine):
-        """A 50 kW ramp costs 4× a 25 kW ramp (quadratic shape)."""
+        """A 50 MW ramp costs 4× a 25 MW ramp (quadratic shape)."""
         cfg = engine.config
 
         def ramp_for_demand_pair(d1: float, d2: float) -> float:
@@ -603,18 +604,18 @@ class TestRampCharge:
             }
             state, _ = engine.step(
                 state, do_nothing_action()
-            )  # primes prev_grid_power_kw
+            )  # primes prev_grid_power_mw
             _, second = engine.step(state, do_nothing_action())
             return second["cost_breakdown"]["ramp_charge"]
 
-        small = ramp_for_demand_pair(20.0, 45.0)  # 25 kW ramp → 625 × rate
-        big = ramp_for_demand_pair(20.0, 70.0)  # 50 kW ramp → 2500 × rate
+        small = ramp_for_demand_pair(20.0, 45.0)  # 25 MW ramp → 625 × rate
+        big = ramp_for_demand_pair(20.0, 70.0)  # 50 MW ramp → 2500 × rate
         assert big == pytest.approx(small * 4.0, rel=1e-6)
         # And the absolute value matches the formula
         assert big == pytest.approx(50.0**2 * cfg.ramp_charge_per_kw2)
 
     def test_negative_and_positive_ramps_cost_equally(self, engine):
-        """Ramping up by 30 kW costs the same as ramping down by 30 kW (squared)."""
+        """Ramping up by 30 MW costs the same as ramping down by 30 MW (squared)."""
         # Demand goes 50 → 80 (ramp up 30)
         up = {
             "time": 0,
@@ -646,9 +647,9 @@ class TestRampCharge:
         )
 
     def test_prev_grid_power_persists_in_state(self, engine, base_state):
-        """new_state['prev_grid_power_kw'] equals the just-computed net_grid_power."""
+        """new_state['prev_grid_power_mw'] equals the just-computed net_grid_power."""
         new_state, outputs = engine.step(base_state, do_nothing_action())
-        assert new_state["prev_grid_power_kw"] == pytest.approx(
+        assert new_state["prev_grid_power_mw"] == pytest.approx(
             outputs["net_grid_power"]
         )
 
@@ -672,14 +673,14 @@ class TestRampCharge:
 
 class TestFcasReserve:
     def test_no_reserve_no_revenue(self, engine, base_state):
-        """fcas_reserve_kw=0 produces zero FCAS revenue."""
+        """fcas_reserve_mw=0 produces zero FCAS revenue."""
         _, outputs = engine.step(base_state, do_nothing_action())
         assert outputs["fcas_reserve"] == pytest.approx(0.0)
         assert outputs["cost_breakdown"]["fcas_revenue"] == pytest.approx(0.0)
 
     def test_reserve_generates_revenue(self, engine, base_state):
-        """Holding 20 kW for FCAS earns 20 × dt × rate (negative cost)."""
-        action = {**do_nothing_action(), "fcas_reserve_kw": 20.0}
+        """Holding 20 MW for FCAS earns 20 × dt × rate (negative cost)."""
+        action = {**do_nothing_action(), "fcas_reserve_mw": 20.0}
         _, outputs = engine.step(base_state, action)
         cfg = engine.config
         expected_revenue = -20.0 * cfg.dt_hours * cfg.fcas_revenue_per_kw_per_hour
@@ -689,25 +690,25 @@ class TestFcasReserve:
         assert outputs["cost_breakdown"]["fcas_revenue"] < 0  # it's revenue
 
     def test_reserve_clipped_to_inverter_max(self, engine, base_state):
-        """FCAS reserve cannot exceed max_inverter_kw (and goes negative is rejected)."""
+        """FCAS reserve cannot exceed max_inverter_mw (and goes negative is rejected)."""
         cfg = engine.config
-        too_much = {**do_nothing_action(), "fcas_reserve_kw": cfg.max_inverter_kw * 2}
+        too_much = {**do_nothing_action(), "fcas_reserve_mw": cfg.max_inverter_mw * 2}
         _, outputs = engine.step(base_state, too_much)
-        assert outputs["fcas_reserve"] == pytest.approx(cfg.max_inverter_kw)
+        assert outputs["fcas_reserve"] == pytest.approx(cfg.max_inverter_mw)
 
-        negative = {**do_nothing_action(), "fcas_reserve_kw": -10.0}
+        negative = {**do_nothing_action(), "fcas_reserve_mw": -10.0}
         _, outputs = engine.step(base_state, negative)
         assert outputs["fcas_reserve"] == pytest.approx(0.0)
 
     # The trade-off — the whole point of this feature
     def test_reserve_eats_into_battery_capacity(self, engine, base_state):
-        """Reserving 30 kW for FCAS leaves only 20 kW for battery dispatch."""
+        """Reserving 30 MW for FCAS leaves only 20 MW for battery dispatch."""
         cfg = engine.config
         action = {
-            "battery_flow_kw": cfg.max_inverter_kw,  # request full discharge
+            "battery_flow_mw": cfg.max_inverter_mw,  # request full discharge
             "emergency_generator": 0.0,
             "curtail_solar": 0.0,
-            "fcas_reserve_kw": 30.0,  # but reserve 30 first
+            "fcas_reserve_mw": 30.0,  # but reserve 30 first
         }
         _, outputs = engine.step(base_state, action)
         # Effective battery budget = 50 - 30 = 20
@@ -718,18 +719,18 @@ class TestFcasReserve:
         """Reserving the full inverter for FCAS leaves zero for battery dispatch."""
         cfg = engine.config
         action = {
-            "battery_flow_kw": -cfg.max_inverter_kw,  # request full charge
+            "battery_flow_mw": -cfg.max_inverter_mw,  # request full charge
             "emergency_generator": 0.0,
             "curtail_solar": 0.0,
-            "fcas_reserve_kw": cfg.max_inverter_kw,
+            "fcas_reserve_mw": cfg.max_inverter_mw,
         }
         _, outputs = engine.step(base_state, action)
-        assert outputs["fcas_reserve"] == pytest.approx(cfg.max_inverter_kw)
+        assert outputs["fcas_reserve"] == pytest.approx(cfg.max_inverter_mw)
         assert outputs["battery_dispatch"] == pytest.approx(0.0)
 
     def test_reserve_does_not_drain_soc(self, engine, base_state):
         """FCAS reserve is capacity-only — battery energy is unchanged."""
-        action = {**do_nothing_action(), "fcas_reserve_kw": 40.0}
+        action = {**do_nothing_action(), "fcas_reserve_mw": 40.0}
         new_state, _ = engine.step(base_state, action)
         # SOC didn't move (no discharge / charge happened)
         assert new_state["soc"] == pytest.approx(base_state["soc"])
@@ -740,7 +741,7 @@ class TestFcasReserve:
         no_fcas = engine.step(base_state, do_nothing_action())[1]["net_grid_power"]
         with_fcas = engine.step(
             base_state,
-            {**do_nothing_action(), "fcas_reserve_kw": 40.0},
+            {**do_nothing_action(), "fcas_reserve_mw": 40.0},
         )[1]["net_grid_power"]
         assert no_fcas == pytest.approx(with_fcas)
 
@@ -749,7 +750,7 @@ class TestFcasReserve:
         from watt_the_hack.engine.engine import Engine, SimulationConfig
 
         engine = Engine(config=SimulationConfig(fcas_revenue_per_kw_per_hour=0.0))
-        action = {**do_nothing_action(), "fcas_reserve_kw": 50.0}
+        action = {**do_nothing_action(), "fcas_reserve_mw": 50.0}
         _, outputs = engine.step(base_state, action)
         assert outputs["cost_breakdown"]["fcas_revenue"] == pytest.approx(0.0)
         # But the reservation itself is still recognized (and battery is locked)
@@ -763,7 +764,7 @@ class TestFcasReserve:
 
 class TestFcasDispatch:
     def test_no_dispatch_event_no_effect(self, engine, base_state):
-        action = {**do_nothing_action(), "fcas_reserve_kw": 20.0}
+        action = {**do_nothing_action(), "fcas_reserve_mw": 20.0}
         _, outputs = engine.step(base_state, action)
         assert outputs["fcas_dispatch_required"] == pytest.approx(0.0)
         assert outputs["fcas_dispatch_delivered"] == pytest.approx(0.0)
@@ -779,22 +780,22 @@ class TestFcasDispatch:
             "type": "fcas_dispatch",
             "at_step": 0,
             "end_step": 0,
-            "magnitude_kw": 10.0,
+            "magnitude_mw": 10.0,
         }]
         # Reserve 20kW, required is 10kW. Should deliver 10kW.
-        action = {**do_nothing_action(), "fcas_reserve_kw": 20.0}
+        action = {**do_nothing_action(), "fcas_reserve_mw": 20.0}
         new_state, outputs = engine.step(base_state, action)
         
         assert outputs["fcas_dispatch_required"] == pytest.approx(10.0)
         assert outputs["fcas_dispatch_delivered"] == pytest.approx(10.0)
         assert outputs["fcas_shortfall"] == pytest.approx(0.0)
         
-        bonus = -10.0 * engine.config.dt_hours * engine.config.fcas_dispatch_bonus_per_kwh
+        bonus = -10.0 * engine.config.dt_hours * engine.config.fcas_dispatch_bonus_per_mwh
         assert outputs["cost_breakdown"]["fcas_dispatch_bonus"] == pytest.approx(bonus)
         assert outputs["cost_breakdown"]["fcas_shortfall_penalty"] == pytest.approx(0.0)
         
         # SOC should be reduced by actual_delivery
-        expected_soc_drop = (10.0 * engine.config.dt_hours) / (engine.config.battery_capacity_kwh * engine.config.discharge_efficiency)
+        expected_soc_drop = (10.0 * engine.config.dt_hours) / (engine.config.battery_capacity_mwh * engine.config.discharge_efficiency)
         assert new_state["soc"] == pytest.approx(1.0 - expected_soc_drop)
 
     def test_shortfall_due_to_no_reserve(self, engine, base_state):
@@ -804,17 +805,17 @@ class TestFcasDispatch:
             "type": "fcas_dispatch",
             "at_step": 0,
             "end_step": 0,
-            "magnitude_kw": 10.0,
+            "magnitude_mw": 10.0,
         }]
         # Reserve 0kW. Should deliver 0kW and shortfall 10kW.
-        action = {**do_nothing_action(), "fcas_reserve_kw": 0.0}
+        action = {**do_nothing_action(), "fcas_reserve_mw": 0.0}
         new_state, outputs = engine.step(base_state, action)
         
         assert outputs["fcas_dispatch_required"] == pytest.approx(10.0)
         assert outputs["fcas_dispatch_delivered"] == pytest.approx(0.0)
         assert outputs["fcas_shortfall"] == pytest.approx(10.0)
         
-        penalty = 10.0 * engine.config.dt_hours * engine.config.fcas_shortfall_penalty_per_kwh
+        penalty = 10.0 * engine.config.dt_hours * engine.config.fcas_shortfall_penalty_per_mwh
         assert outputs["cost_breakdown"]["fcas_shortfall_penalty"] == pytest.approx(penalty)
         assert new_state["soc"] == pytest.approx(1.0)
 
@@ -825,39 +826,62 @@ class TestFcasDispatch:
             "type": "fcas_dispatch",
             "at_step": 0,
             "end_step": 0,
-            "magnitude_kw": 10.0,
+            "magnitude_mw": 10.0,
         }]
         # Reserve 20kW, but SOC is 0. Should deliver 0kW and shortfall 10kW.
-        action = {**do_nothing_action(), "fcas_reserve_kw": 20.0}
+        action = {**do_nothing_action(), "fcas_reserve_mw": 20.0}
         new_state, outputs = engine.step(base_state, action)
         
         assert outputs["fcas_dispatch_delivered"] == pytest.approx(0.0)
         assert outputs["fcas_shortfall"] == pytest.approx(10.0)
         
-        penalty = 10.0 * engine.config.dt_hours * engine.config.fcas_shortfall_penalty_per_kwh
+        penalty = 10.0 * engine.config.dt_hours * engine.config.fcas_shortfall_penalty_per_mwh
         assert outputs["cost_breakdown"]["fcas_shortfall_penalty"] == pytest.approx(penalty)
 
     def test_partial_delivery_due_to_low_soc(self, engine, base_state):
         # SOC is barely enough to supply 5kW for 1hr.
-        soc = (5.0 * 1.0) / (engine.config.battery_capacity_kwh * engine.config.discharge_efficiency)
+        soc = (5.0 * 1.0) / (engine.config.battery_capacity_mwh * engine.config.discharge_efficiency)
         base_state["soc"] = soc
         base_state["_soc_true"] = soc
         base_state["events"] = [{
             "type": "fcas_dispatch",
             "at_step": 0,
             "end_step": 0,
-            "magnitude_kw": 10.0,
+            "magnitude_mw": 10.0,
         }]
-        action = {**do_nothing_action(), "fcas_reserve_kw": 20.0}
+        action = {**do_nothing_action(), "fcas_reserve_mw": 20.0}
         new_state, outputs = engine.step(base_state, action)
         
         assert outputs["fcas_dispatch_delivered"] == pytest.approx(5.0)
         assert outputs["fcas_shortfall"] == pytest.approx(5.0)
         
-        bonus = -5.0 * engine.config.dt_hours * engine.config.fcas_dispatch_bonus_per_kwh
-        penalty = 5.0 * engine.config.dt_hours * engine.config.fcas_shortfall_penalty_per_kwh
+        bonus = -5.0 * engine.config.dt_hours * engine.config.fcas_dispatch_bonus_per_mwh
+        penalty = 5.0 * engine.config.dt_hours * engine.config.fcas_shortfall_penalty_per_mwh
         assert outputs["cost_breakdown"]["fcas_dispatch_bonus"] == pytest.approx(bonus)
         assert outputs["cost_breakdown"]["fcas_shortfall_penalty"] == pytest.approx(penalty)
+
+
+# ---------------------------------------------------------------------------
+# FCAS reserve ramping — penalty for volatility in FCAS reservation
+# ---------------------------------------------------------------------------
+
+
+class TestFcasRamp:
+    def test_ramp_penalty_applied_on_change(self, engine, base_state):
+        base_state["prev_fcas_reserve_mw"] = 10.0
+        # Change reserve to 30.0 MW (delta of 20.0)
+        action = {**do_nothing_action(), "fcas_reserve_mw": 30.0}
+        
+        _, outputs = engine.step(base_state, action)
+        expected_penalty = 20.0 * engine.config.fcas_ramp_penalty_per_mw
+        assert outputs["cost_breakdown"]["fcas_ramp_charge"] == pytest.approx(expected_penalty)
+
+    def test_no_ramp_penalty_if_unchanged(self, engine, base_state):
+        base_state["prev_fcas_reserve_mw"] = 25.0
+        action = {**do_nothing_action(), "fcas_reserve_mw": 25.0}
+        
+        _, outputs = engine.step(base_state, action)
+        assert outputs["cost_breakdown"]["fcas_ramp_charge"] == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -949,7 +973,7 @@ class TestComplianceMechanic:
         assert outputs["cost_breakdown"]["compliance_penalty"] == pytest.approx(0.0)
 
     def test_export_cap_breach_charged_automatically(self, engine):
-        """Exporting 50 kW against a 10 kW cap → 40 kW excess × dt × rate."""
+        """Exporting 50 MW against a 10 MW cap → 40 MW excess × dt × rate."""
         state = {
             "time": 0,
             "demand": 5.0,
@@ -970,7 +994,7 @@ class TestComplianceMechanic:
         _, outputs = engine.step(state, do_nothing_action())
         assert outputs["net_grid_power"] == pytest.approx(-50.0)
         cfg = engine.config
-        expected = 40.0 * cfg.dt_hours * cfg.compliance_export_penalty_per_kw
+        expected = 40.0 * cfg.dt_hours * cfg.compliance_export_penalty_per_mw
         assert outputs["cost_breakdown"]["compliance_penalty"] == pytest.approx(expected)
 
     def test_export_cap_no_penalty_when_importing(self, engine, state_with_low_soc):
@@ -1013,7 +1037,7 @@ class TestComplianceMechanic:
         _, outputs = engine.step(state, do_nothing_action())
         cfg = engine.config
         soc_part = 0.30 * cfg.compliance_soc_penalty_per_unit
-        exp_part = 40.0 * cfg.dt_hours * cfg.compliance_export_penalty_per_kw
+        exp_part = 40.0 * cfg.dt_hours * cfg.compliance_export_penalty_per_mw
         assert outputs["cost_breakdown"]["compliance_penalty"] == pytest.approx(
             soc_part + exp_part
         )
@@ -1062,14 +1086,14 @@ class TestComplianceMechanic:
         assert outputs["cost_breakdown"]["compliance_penalty"] == pytest.approx(0.0)
 
     def test_penalty_below_blackout(self):
-        """A 10% SOC unit shortfall must cost less than 10 kWh of blackout —
+        """A 10% SOC unit shortfall must cost less than 10 MWh of blackout —
         otherwise controllers may rationally shed load to comply."""
         from watt_the_hack.engine.engine import SimulationConfig
 
         cfg = SimulationConfig()
         # 10% of battery capacity is ~10kWh
         ten_pct_soc_penalty = 0.10 * cfg.compliance_soc_penalty_per_unit
-        blackout_10kwh = 10.0 * cfg.blackout_penalty_per_kwh
+        blackout_10kwh = 10.0 * cfg.blackout_penalty_per_mwh
         assert ten_pct_soc_penalty < blackout_10kwh
 
     def test_penalty_above_wear_cost(self):
@@ -1079,7 +1103,7 @@ class TestComplianceMechanic:
         from watt_the_hack.engine.engine import SimulationConfig
 
         cfg = SimulationConfig()
-        wear_to_comply = 10.0 * cfg.battery_wear_cost_per_kwh
+        wear_to_comply = 10.0 * cfg.battery_wear_cost_per_mwh
         ignore_4_steps = 0.10 * cfg.compliance_soc_penalty_per_unit * 4
         assert ignore_4_steps > wear_to_comply, (
             f"ignoring 1h ({ignore_4_steps:.2f}) cheaper than complying "
@@ -1137,7 +1161,7 @@ class TestDieselBanExemption:
     parsing.
 
     During a ban, diesel still runs (physics is physics) but the engine
-    charges a per-kWh penalty unless the controller has submitted a valid
+    charges a per-MWh penalty unless the controller has submitted a valid
     exemption naming the active ban's directive_id, with a substantive
     reason and a plausible duration.
     """
@@ -1156,12 +1180,12 @@ class TestDieselBanExemption:
         }
 
     @staticmethod
-    def _diesel_action(kw: float) -> dict:
+    def _diesel_action(mw: float) -> dict:
         return {
-            "battery_flow_kw": 0.0,
-            "emergency_generator": kw,
+            "battery_flow_mw": 0.0,
+            "emergency_generator": mw,
             "curtail_solar": 0.0,
-            "fcas_reserve_kw": 0.0,
+            "fcas_reserve_mw": 0.0,
         }
 
     @staticmethod
@@ -1192,8 +1216,8 @@ class TestDieselBanExemption:
     def test_penalty_fires_during_active_ban(self, engine, diesel_state):
         diesel_state["events"] = [self._ban_event()]
         _, outputs = engine.step(diesel_state, self._diesel_action(30.0))
-        # 30 kW * 0.25 h * $3/kWh = $22.50
-        expected = 30.0 * engine.config.dt_hours * engine.config.diesel_ban_penalty_per_kwh
+        # 30 MW * 0.25 h * $3/MWh = $22.50
+        expected = 30.0 * engine.config.dt_hours * engine.config.diesel_ban_penalty_per_mwh
         assert outputs["cost_breakdown"]["diesel_ban_penalty"] == pytest.approx(expected)
 
     def test_valid_exemption_zeroes_penalty(self, engine, diesel_state):
@@ -1201,11 +1225,11 @@ class TestDieselBanExemption:
         diesel_state["agent_plan"] = {
             "emergency_exemption": {
                 "directive_id": "AQ-TEST-1",
-                # Includes a digit (35) AND operational vocabulary (kW, SOC,
+                # Includes a digit (35) AND operational vocabulary (MW, SOC,
                 # demand) — the substantive markers the acceptor requires.
                 "reason": (
-                    "Current demand 145 kW exceeds the 120 kW grid import "
-                    "cap, with battery SOC at 0.50 leaving only 35 kW of "
+                    "Current demand 145 MW exceeds the 120 MW grid import "
+                    "cap, with battery SOC at 0.50 leaving only 35 MW of "
                     "discharge headroom — diesel is required to bridge "
                     "the deficit and avoid a blackout."
                 ),
@@ -1348,11 +1372,11 @@ class TestDieselBanExemption:
         from watt_the_hack.engine.engine import SimulationConfig
 
         cfg = SimulationConfig()
-        # Running diesel during a ban costs fuel + ban penalty per kWh
+        # Running diesel during a ban costs fuel + ban penalty per MWh
         diesel_during_ban = (
-            cfg.emergency_generator_cost_per_kwh + cfg.diesel_ban_penalty_per_kwh
+            cfg.emergency_generator_cost_per_mwh + cfg.diesel_ban_penalty_per_mwh
         )
-        assert diesel_during_ban < cfg.blackout_penalty_per_kwh, (
+        assert diesel_during_ban < cfg.blackout_penalty_per_mwh, (
             "ban + fuel ≥ blackout — rational controllers would shed load"
         )
 
@@ -1361,7 +1385,7 @@ class TestActionKeys:
     def test_engine_reads_string_keys(self, engine, base_state):
         """Engine reads action via plain string keys."""
         action = {
-            "battery_flow_kw": 5.0,
+            "battery_flow_mw": 5.0,
             "emergency_generator": 0.0,
             "curtail_solar": 0.0,
         }

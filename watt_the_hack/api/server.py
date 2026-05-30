@@ -32,10 +32,10 @@ from watt_the_hack.simulation.strategy import ResolvedStrategy
 
 
 class ParametricControllerParamsModel(BaseModel):
-    battery_flow_kw: float = 0.0
+    battery_flow_mw: float = 0.0
     emergency_generator: float = 0.0
     curtail_solar: float = 0.0
-    fcas_reserve_kw: float = 0.0
+    fcas_reserve_mw: float = 0.0
     subscribe_ids: bool = False
 
 
@@ -383,10 +383,10 @@ def _fallback_controller():
 def _resolve_controller(spec: ControllerSpec):
     if isinstance(spec, SimpleControllerSpec):
         params = ParametricControllerParams(
-            battery_flow_kw=spec.params.battery_flow_kw,
+            battery_flow_mw=spec.params.battery_flow_mw,
             emergency_generator=spec.params.emergency_generator,
             curtail_solar=spec.params.curtail_solar,
-            fcas_reserve_kw=spec.params.fcas_reserve_kw,
+            fcas_reserve_mw=spec.params.fcas_reserve_mw,
             subscribe_ids=spec.params.subscribe_ids,
         )
         return make_parametric_controller(params), None

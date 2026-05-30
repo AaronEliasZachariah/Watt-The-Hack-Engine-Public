@@ -13,13 +13,13 @@ def rule_based_controller(state: dict) -> dict:
     # Battery Status
     soc = float(state.get("soc", 0.5))  # State of Charge (0.0 = Empty, 1.0 = Full)
 
-    # City Physics (in kW)
-    demand_kw = float(state.get("demand", 0.0))  # How much power the city is consuming
-    solar_kw = float(
+    # City Physics (in MW)
+    demand_mw = float(state.get("demand", 0.0))  # How much power the city is consuming
+    solar_mw = float(
         state.get("solar", 0.0)
     )  # How much free power the sun is providing
 
-    # Economics ($ per kWh)
+    # Economics ($ per MWh)
     price = float(
         state.get("price", 0.2)
     )  # Current cost to import power from the main grid
@@ -29,41 +29,41 @@ def rule_based_controller(state: dict) -> dict:
     # =========================================================================
 
     # Calculate if we have free solar power left over after feeding the city
-    solar_surplus_kw = solar_kw - demand_kw
+    solar_surplus_mw = solar_mw - demand_mw
 
-    battery_flow_kw = 0.0
+    battery_flow_mw = 0.0
     emergency_generator = 0.0
     curtail_solar = 0.0
-    fcas_reserve_kw = 0.0
+    fcas_reserve_mw = 0.0
 
     # --- Strategy A: Battery Management ---
     # Rule 1: If there is extra solar, and the battery isn't full, charge the battery!
-    if solar_surplus_kw > 0.0 and soc < 0.95:
+    if solar_surplus_mw > 0.0 and soc < 0.95:
         # Negative value means CHARGE the battery
-        battery_flow_kw = -solar_surplus_kw
+        battery_flow_mw = -solar_surplus_mw
 
     # Rule 2: If the city needs power, and grid prices are high, discharge the battery!
-    elif solar_surplus_kw < 0.0 and price >= 0.30 and soc > 0.20:
+    elif solar_surplus_mw < 0.0 and price >= 0.30 and soc > 0.20:
         # Positive value means DISCHARGE the battery to help feed the city
-        battery_flow_kw = abs(solar_surplus_kw)
+        battery_flow_mw = abs(solar_surplus_mw)
 
     # Calculate net demand after battery
-    net_city_demand = demand_kw - solar_kw - battery_flow_kw
+    net_city_demand = demand_mw - solar_mw - battery_flow_mw
 
     # --- Strategy B: Overvoltage Management (Too much solar) ---
-    # The grid can only absorb 50.0 kW of our exported solar.
-    # Exceeding this causes Overvoltage (Massive $5.00/kWh penalty).
+    # The grid can only absorb 50.0 MW of our exported solar.
+    # Exceeding this causes Overvoltage (Massive $5.00/MWh penalty).
     # If we are exporting too much, we must safely disconnect some solar panels.
     if net_city_demand < -50.0:
         curtail_solar = abs(net_city_demand) - 50.0
 
     # --- Strategy C: Risk Management (The Panic Button) ---
-    # The main grid can only supply a maximum of 120.0 kW.
-    # If the city pulls more than that, it BLACKS OUT (Massive $10.00/kWh penalty).
+    # The main grid can only supply a maximum of 120.0 MW.
+    # If the city pulls more than that, it BLACKS OUT (Massive $10.00/MWh penalty).
     # If the battery can't cover the gap, we must turn on the expensive Diesel Generator.
     elif net_city_demand > 120.0:
         # We are about to overload the grid!
-        # Fire up the diesel generator ($1.00/kWh) to cover the exact difference.
+        # Fire up the diesel generator ($1.00/MWh) to cover the exact difference.
         emergency_generator = net_city_demand - 120.0
 
     # =========================================================================
@@ -71,12 +71,12 @@ def rule_based_controller(state: dict) -> dict:
     # =========================================================================
 
     return {
-        # How many kW to push/pull from the battery (Positive = Discharge, Negative = Charge)
-        "battery_flow_kw": battery_flow_kw,
-        # How many kW to generate from the backup diesel plant (Costs $1.00/kWh to run)
+        # How many MW to push/pull from the battery (Positive = Discharge, Negative = Charge)
+        "battery_flow_mw": battery_flow_mw,
+        # How many MW to generate from the backup diesel plant (Costs $1.00/MWh to run)
         "emergency_generator": emergency_generator,
-        # How many kW of solar power to safely disconnect to avoid frying the grid
+        # How many MW of solar power to safely disconnect to avoid frying the grid
         "curtail_solar": curtail_solar,
-        # How many kW of inverter capacity to reserve for FCAS revenue
-        "fcas_reserve_kw": fcas_reserve_kw,
+        # How many MW of inverter capacity to reserve for FCAS revenue
+        "fcas_reserve_mw": fcas_reserve_mw,
     }

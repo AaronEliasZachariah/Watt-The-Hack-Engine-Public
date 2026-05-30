@@ -180,13 +180,13 @@ def _per_step_row(
         "solar": float(view.get("solar", 0.0)),
         "price": float(view.get("price", 0.0)),
         "soc": float(state.get("soc", 0.0)),
-        "battery_flow_kw": float(action.get("battery_flow_kw", 0.0)),
-        "emergency_generator_kw": float(action.get("emergency_generator", 0.0)),
-        "curtail_solar_kw": float(action.get("curtail_solar", 0.0)),
-        "fcas_reserve_kw": float(action.get("fcas_reserve_kw", 0.0)),
-        "net_grid_power_kw": float(outputs.get("net_grid_power", 0.0)),
-        "unmet_demand_kw": float(outputs.get("unmet_demand", 0.0)),
-        "overvoltage_kw": float(outputs.get("overvoltage_kw", 0.0)),
+        "battery_flow_mw": float(action.get("battery_flow_mw", 0.0)),
+        "emergency_generator_mw": float(action.get("emergency_generator", 0.0)),
+        "curtail_solar_mw": float(action.get("curtail_solar", 0.0)),
+        "fcas_reserve_mw": float(action.get("fcas_reserve_mw", 0.0)),
+        "net_grid_power_mw": float(outputs.get("net_grid_power", 0.0)),
+        "unmet_demand_mw": float(outputs.get("unmet_demand", 0.0)),
+        "overvoltage_mw": float(outputs.get("overvoltage_mw", 0.0)),
         "step_cost": float(outputs.get("cost", 0.0)),
         "cum_cost": float(sum(breakdown_cum.values())),
     }
@@ -276,16 +276,16 @@ def _maybe_write_plots(out_dir: Path, rows: list[dict], breakdown: dict) -> None
     ax = axes[0]
     ax.plot(t, [r["demand"] for r in rows], label="demand", color="tab:orange")
     ax.plot(t, [r["solar"] for r in rows], label="solar", color="tab:green")
-    ax.plot(t, [r["net_grid_power_kw"] for r in rows], label="net grid (+import / -export)", color="tab:gray")
-    ax.set_ylabel("kW")
+    ax.plot(t, [r["net_grid_power_mw"] for r in rows], label="net grid (+import / -export)", color="tab:gray")
+    ax.set_ylabel("MW")
     ax.legend(loc="upper right", fontsize=8)
     ax.grid(True, alpha=0.3)
     ax = axes[1]
-    ax.plot(t, [r["battery_flow_kw"] for r in rows], label="battery flow (+disch/-ch)", color="tab:blue")
-    ax.plot(t, [r["emergency_generator_kw"] for r in rows], label="diesel", color="tab:red")
-    ax.plot(t, [r["curtail_solar_kw"] for r in rows], label="curtail", color="tab:green", linestyle="--")
+    ax.plot(t, [r["battery_flow_mw"] for r in rows], label="battery flow (+disch/-ch)", color="tab:blue")
+    ax.plot(t, [r["emergency_generator_mw"] for r in rows], label="diesel", color="tab:red")
+    ax.plot(t, [r["curtail_solar_mw"] for r in rows], label="curtail", color="tab:green", linestyle="--")
     ax.set_xlabel("hours")
-    ax.set_ylabel("kW")
+    ax.set_ylabel("MW")
     ax.legend(loc="upper right", fontsize=8)
     ax.grid(True, alpha=0.3)
     fig.suptitle("Dispatch overview")
@@ -337,13 +337,13 @@ def _write_report_html(
     path.parent.mkdir(parents=True, exist_ok=True)
     dt_hours = rows[1]["time_hours"] - rows[0]["time_hours"] if len(rows) > 1 else 0.25
     worst_steps = sorted(rows, key=lambda r: r["step_cost"], reverse=True)[:10]
-    overvoltage_steps = [r for r in rows if abs(r["overvoltage_kw"]) > 1e-9]
-    unmet_steps = [r for r in rows if abs(r["unmet_demand_kw"]) > 1e-9]
-    imports = [max(0.0, r["net_grid_power_kw"]) for r in rows]
-    exports = [max(0.0, -r["net_grid_power_kw"]) for r in rows]
-    battery = [r["battery_flow_kw"] for r in rows]
-    diesel = [r["emergency_generator_kw"] for r in rows]
-    curtail = [r["curtail_solar_kw"] for r in rows]
+    overvoltage_steps = [r for r in rows if abs(r["overvoltage_mw"]) > 1e-9]
+    unmet_steps = [r for r in rows if abs(r["unmet_demand_mw"]) > 1e-9]
+    imports = [max(0.0, r["net_grid_power_mw"]) for r in rows]
+    exports = [max(0.0, -r["net_grid_power_mw"]) for r in rows]
+    battery = [r["battery_flow_mw"] for r in rows]
+    diesel = [r["emergency_generator_mw"] for r in rows]
+    curtail = [r["curtail_solar_mw"] for r in rows]
 
     cost_rows = "\n".join(
         "<tr>"
@@ -362,11 +362,11 @@ def _write_report_html(
         + _td(_fmt_money(r["cum_cost"]))
         + _td(_fmt_num(r["demand"], 1))
         + _td(_fmt_num(r["solar"], 1))
-        + _td(_fmt_num(r["net_grid_power_kw"], 1))
+        + _td(_fmt_num(r["net_grid_power_mw"], 1))
         + _td(_fmt_num(r["soc"], 2))
-        + _td(_fmt_num(r["battery_flow_kw"], 1))
-        + _td(_fmt_num(r["overvoltage_kw"], 1))
-        + _td(_fmt_num(r["unmet_demand_kw"], 1))
+        + _td(_fmt_num(r["battery_flow_mw"], 1))
+        + _td(_fmt_num(r["overvoltage_mw"], 1))
+        + _td(_fmt_num(r["unmet_demand_mw"], 1))
         + "</tr>"
         for r in worst_steps
     )
@@ -413,7 +413,7 @@ def _write_report_html(
   <section class="grid">
     <div class="card"><div class="label">Final Score</div><div class="metric">{_fmt_money(summary["final_score"])}</div><div class="label">lower wins</div></div>
     <div class="card"><div class="label">Renewable Ratio</div><div class="metric">{summary["renewable_ratio"]:.3f}</div></div>
-    <div class="card"><div class="label">Unmet Demand</div><div class="metric">{summary["unmet_demand_total"]:.2f} kWh</div></div>
+    <div class="card"><div class="label">Unmet Demand</div><div class="metric">{summary["unmet_demand_total"]:.2f} MWh</div></div>
     <div class="card"><div class="label">Steps</div><div class="metric">{len(rows)}</div><div class="label">{dt_hours:.2f} h timestep</div></div>
   </section>
 
@@ -427,18 +427,18 @@ def _write_report_html(
   <section class="grid">
     <div class="card"><h2>Grid Violations</h2>
       <table>
-        <tr><th>Signal</th><th>Steps</th><th>Max kW</th></tr>
-        <tr>{_td("overvoltage")}{_td(len(overvoltage_steps))}{_td(_fmt_num(max([r["overvoltage_kw"] for r in rows], default=0.0), 1))}</tr>
-        <tr>{_td("unmet demand")}{_td(len(unmet_steps))}{_td(_fmt_num(max([r["unmet_demand_kw"] for r in rows], default=0.0), 1))}</tr>
+        <tr><th>Signal</th><th>Steps</th><th>Max MW</th></tr>
+        <tr>{_td("overvoltage")}{_td(len(overvoltage_steps))}{_td(_fmt_num(max([r["overvoltage_mw"] for r in rows], default=0.0), 1))}</tr>
+        <tr>{_td("unmet demand")}{_td(len(unmet_steps))}{_td(_fmt_num(max([r["unmet_demand_mw"] for r in rows], default=0.0), 1))}</tr>
       </table>
     </div>
     <div class="card"><h2>Action Stats</h2>
       <table>
         <tr><th>Signal</th><th>Min</th><th>Max</th><th>Total</th></tr>
-        <tr>{_td("battery kW")}{_td(_fmt_num(min(battery, default=0.0), 1))}{_td(_fmt_num(max(battery, default=0.0), 1))}{_td(_fmt_num(sum(abs(v) for v in battery) * dt_hours, 1) + " kWh throughput")}</tr>
-        <tr>{_td("diesel kW")}{_td(_fmt_num(min(diesel, default=0.0), 1))}{_td(_fmt_num(max(diesel, default=0.0), 1))}{_td(_fmt_num(sum(diesel) * dt_hours, 1) + " kWh")}</tr>
-        <tr>{_td("curtail kW")}{_td(_fmt_num(min(curtail, default=0.0), 1))}{_td(_fmt_num(max(curtail, default=0.0), 1))}{_td(_fmt_num(sum(curtail) * dt_hours, 1) + " kWh")}</tr>
-        <tr>{_td("grid import/export")}{_td(_fmt_num(max(exports, default=0.0), 1) + " export")}{_td(_fmt_num(max(imports, default=0.0), 1) + " import")}{_td(_fmt_num(sum(imports) * dt_hours, 1) + " kWh import")}</tr>
+        <tr>{_td("battery MW")}{_td(_fmt_num(min(battery, default=0.0), 1))}{_td(_fmt_num(max(battery, default=0.0), 1))}{_td(_fmt_num(sum(abs(v) for v in battery) * dt_hours, 1) + " MWh throughput")}</tr>
+        <tr>{_td("diesel MW")}{_td(_fmt_num(min(diesel, default=0.0), 1))}{_td(_fmt_num(max(diesel, default=0.0), 1))}{_td(_fmt_num(sum(diesel) * dt_hours, 1) + " MWh")}</tr>
+        <tr>{_td("curtail MW")}{_td(_fmt_num(min(curtail, default=0.0), 1))}{_td(_fmt_num(max(curtail, default=0.0), 1))}{_td(_fmt_num(sum(curtail) * dt_hours, 1) + " MWh")}</tr>
+        <tr>{_td("grid import/export")}{_td(_fmt_num(max(exports, default=0.0), 1) + " export")}{_td(_fmt_num(max(imports, default=0.0), 1) + " import")}{_td(_fmt_num(sum(imports) * dt_hours, 1) + " MWh import")}</tr>
       </table>
     </div>
   </section>
@@ -481,7 +481,7 @@ def _print_summary(
     print()
     print(f"final_score          ${summary['final_score']:>12.2f}   (lower wins)")
     print(f"renewable_ratio       {summary['renewable_ratio']:>12.3f}")
-    print(f"unmet_demand_total    {summary['unmet_demand_total']:>12.3f} kWh")
+    print(f"unmet_demand_total    {summary['unmet_demand_total']:>12.3f} MWh")
     if summary.get("controller_errors"):
         print(f"controller_errors     {summary['controller_errors']:>12d}")
     print(f"wall_clock            {wall_seconds:>12.2f} s")
@@ -644,11 +644,11 @@ def _maybe_write_sweep_plots(out_dir: Path, sweep: list[dict]) -> None:
         label = f"{entry['name']}  (${entry['metrics']['final_score']:.0f})"
         axes[0].plot(t, [r["soc"] for r in rows], label=label, color=color)
         axes[1].plot(t, [r["cum_cost"] for r in rows], label=label, color=color)
-        axes[2].plot(t, [r["net_grid_power_kw"] for r in rows], label=label, color=color)
+        axes[2].plot(t, [r["net_grid_power_mw"] for r in rows], label=label, color=color)
     axes[0].set_ylabel("SOC")
     axes[0].set_ylim(0, 1)
     axes[1].set_ylabel("cumulative cost ($)")
-    axes[2].set_ylabel("net grid kW (+imp / -exp)")
+    axes[2].set_ylabel("net grid MW (+imp / -exp)")
     axes[2].set_xlabel("hours")
     for ax in axes:
         ax.grid(True, alpha=0.3)
@@ -674,10 +674,10 @@ def _maybe_write_sweep_plots(out_dir: Path, sweep: list[dict]) -> None:
         ax.set_title(f"{entry['name']}  -  ${score:.2f}", loc="left", fontsize=10)
 
         ax = axes[i, 1]
-        ax.plot(t, [r["battery_flow_kw"] for r in rows], label="battery", color="tab:blue")
-        ax.plot(t, [r["emergency_generator_kw"] for r in rows], label="diesel", color="tab:red")
-        ax.plot(t, [r["curtail_solar_kw"] for r in rows], label="curtail", color="tab:green", linestyle="--")
-        ax.set_ylabel("kW")
+        ax.plot(t, [r["battery_flow_mw"] for r in rows], label="battery", color="tab:blue")
+        ax.plot(t, [r["emergency_generator_mw"] for r in rows], label="diesel", color="tab:red")
+        ax.plot(t, [r["curtail_solar_mw"] for r in rows], label="curtail", color="tab:green", linestyle="--")
+        ax.set_ylabel("MW")
         ax.grid(True, alpha=0.3)
         if i == 0:
             ax.legend(loc="upper right", fontsize=8)

@@ -29,10 +29,10 @@ from typing import Any, Callable
 # Controllers that raise are treated as if they returned this action.
 # Identical to the fallback the admin eval container uses on per-step error.
 ZERO_ACTION: dict[str, float] = {
-    "battery_flow_kw": 0.0,
+    "battery_flow_mw": 0.0,
     "emergency_generator": 0.0,
     "curtail_solar": 0.0,
-    "fcas_reserve_kw": 0.0,
+    "fcas_reserve_mw": 0.0,
 }
 
 

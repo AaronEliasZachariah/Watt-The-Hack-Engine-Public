@@ -84,12 +84,12 @@ def load_scenario(path: str | Path) -> tuple[dict, dict]:
         "_attack_windows_full": spec.get("attack_windows", []),
         "ids_cost_per_step": float(spec.get("ids_cost_per_step", 0.0)) * UNIT_SCALE,
     }
-    # Optional throughput budget: total |kWh| the battery may move across
+    # Optional throughput budget: total |MWh| the battery may move across
     # the whole run. Absent (or null) = unlimited (engine ignores it).
     throughput_budget = spec.get("battery_throughput_kwh_budget")
     if throughput_budget is not None:
-        initial_state["battery_throughput_remaining_kwh"] = float(throughput_budget)
-        initial_state["battery_throughput_budget_kwh"] = float(throughput_budget)
+        initial_state["battery_throughput_remaining_mwh"] = float(throughput_budget)
+        initial_state["battery_throughput_budget_mwh"] = float(throughput_budget)
     # Inject feature flags if the scenario declares them.  When absent,
     # the engine treats all features as enabled (backwards compatible).
     features = spec.get("features")
@@ -133,19 +133,19 @@ def public_metadata(spec: dict) -> dict:
         "start_hour": float(spec.get("start_hour", 0.0)),
         "dt_hours": cfg.dt_hours,
         "limits": {
-            "battery_capacity_kwh": cfg.battery_capacity_kwh,
-            "max_inverter_kw": cfg.max_inverter_kw,
-            "grid_max_import_kw": cfg.grid_max_import_kw,
-            "grid_max_export_kw": cfg.grid_max_export_kw,
-            "max_emergency_generator_kw": cfg.max_emergency_generator_kw,
+            "battery_capacity_mwh": cfg.battery_capacity_mwh,
+            "max_inverter_mw": cfg.max_inverter_mw,
+            "grid_max_import_mw": cfg.grid_max_import_mw,
+            "grid_max_export_mw": cfg.grid_max_export_mw,
+            "max_emergency_generator_mw": cfg.max_emergency_generator_mw,
         },
         "penalties": {
-            "blackout_per_kwh": cfg.blackout_penalty_per_kwh,
-            "overvoltage_per_kwh": cfg.overvoltage_penalty_per_kwh,
-            "diesel_per_kwh": cfg.emergency_generator_cost_per_kwh,
-            "battery_wear_per_kwh": cfg.battery_wear_cost_per_kwh,
-            "demand_charge_per_kw": cfg.demand_charge_per_kw,
-            "export_tariff_per_kwh": cfg.export_tariff,
+            "blackout_per_mwh": cfg.blackout_penalty_per_mwh,
+            "overvoltage_per_mwh": cfg.overvoltage_penalty_per_mwh,
+            "diesel_per_mwh": cfg.emergency_generator_cost_per_mwh,
+            "battery_wear_per_mwh": cfg.battery_wear_cost_per_mwh,
+            "demand_charge_per_mw": cfg.demand_charge_per_mw,
+            "export_tariff_per_mwh": cfg.export_tariff,
             "fcas_revenue_per_kw_per_hour": cfg.fcas_revenue_per_kw_per_hour,
         },
     }
@@ -204,7 +204,7 @@ def scenario_mechanics(spec: dict) -> list[dict]:
         out.append(
             {
                 "id": "throughput_budget",
-                "config": {"kwh": float(spec["battery_throughput_kwh_budget"])},
+                "config": {"mwh": float(spec["battery_throughput_kwh_budget"])},
             }
         )
 
@@ -267,7 +267,7 @@ def config_overrides(spec: dict) -> dict:
     """Extract per-scenario SimulationConfig field overrides.
 
     Scenarios may include a ``config_overrides`` block to tune the engine
-    physics for that specific scenario (e.g. raising demand_charge_per_kw
+    physics for that specific scenario (e.g. raising demand_charge_per_mw
     or zeroing fcas_revenue_per_kw_per_hour).  Returns an empty dict if
     the block is absent — safe to unpack directly into SimulationConfig.
 

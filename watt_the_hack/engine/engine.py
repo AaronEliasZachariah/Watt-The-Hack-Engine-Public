@@ -10,75 +10,76 @@ class PhysicsResult:
     """Output of one physics step. Named fields >>> tuple unpacking."""
 
     next_soc: float
-    battery_kw: float  # actual dispatch after inverter + SOC + FCAS clipping
-    emergency_generator_kw: float  # actual diesel after [0, max] clip
-    curtailed_solar_kw: float  # actual curtailment after clamp to available solar
+    battery_mw: float  # actual dispatch after inverter + SOC + FCAS clipping
+    emergency_generator_mw: float  # actual diesel after [0, max] clip
+    curtailed_solar_mw: float  # actual curtailment after clamp to available solar
     net_grid_power: float  # +import / -export, after grid limit clipping
-    unmet_demand: float  # kW above the import limit (blackout)
-    overvoltage_kw: float  # kW below the negative export limit (overvoltage)
-    fcas_reserve_kw: float  # actual capacity reserved for FCAS revenue
-    fcas_dispatch_required_kw: float = 0.0
-    fcas_dispatch_delivered_kw: float = 0.0
-    fcas_shortfall_kw: float = 0.0
+    unmet_demand: float  # MW above the import limit (blackout)
+    overvoltage_mw: float  # MW below the negative export limit (overvoltage)
+    fcas_reserve_mw: float  # actual capacity reserved for FCAS revenue
+    fcas_dispatch_required_mw: float = 0.0
+    fcas_dispatch_delivered_mw: float = 0.0
+    fcas_shortfall_mw: float = 0.0
 
 
 @dataclass(slots=True)
 class SimulationConfig:
     # 1. Rebalanced Game Board
-    battery_capacity_kwh: float = 100.0
-    max_inverter_kw: float = 50.0
-    grid_max_import_kw: float = 120.0
-    grid_max_export_kw: float = 50.0  # NEW: Export limit
+    battery_capacity_mwh: float = 100.0
+    max_inverter_mw: float = 50.0
+    grid_max_import_mw: float = 120.0
+    grid_max_export_mw: float = 50.0  # NEW: Export limit
 
     charge_efficiency: float = 0.95
     discharge_efficiency: float = 0.95
     dt_hours: float = 0.25
 
     # FCAS Dispatch Penalties and Bonuses
-    fcas_shortfall_penalty_per_kwh: float = 20000.0
-    fcas_dispatch_bonus_per_kwh: float = 200.0
-    fcas_micro_cycling_factor: float = 0.01  # kWh of throughput per kW of reserve per hour
+    fcas_shortfall_penalty_per_mwh: float = 20000.0
+    fcas_dispatch_bonus_per_mwh: float = 200.0
+    fcas_micro_cycling_factor: float = 0.01  # MWh of throughput per MW of reserve per hour
+    fcas_ramp_penalty_per_mw: float = 500.0
 
 
     # Phase 3 Realism: Split Pricing & Penalties
     export_tariff: float = 50.0  # $50.00 flat rate for exporting solar (was 0.05)
-    blackout_penalty_per_kwh: float = 10000.00
-    emergency_generator_cost_per_kwh: float = 1000.00
-    max_emergency_generator_kw: float = 50.0
-    overvoltage_penalty_per_kwh: float = 5000.00  # NEW: Penalty for exporting too much
+    blackout_penalty_per_mwh: float = 10000.00
+    emergency_generator_cost_per_mwh: float = 1000.00
+    max_emergency_generator_mw: float = 50.0
+    overvoltage_penalty_per_mwh: float = 5000.00  # NEW: Penalty for exporting too much
 
-    # Battery wear: each kWh moved through the battery (charge or discharge)
-    # eats a fraction of its lifetime. Calibrated to ~$50/kWh throughput,
-    # matching real Li-ion replacement cost (~$400,000/kWh capital, ~4000 cycles).
+    # Battery wear: each MWh moved through the battery (charge or discharge)
+    # eats a fraction of its lifetime. Calibrated to ~$50/MWh throughput,
+    # matching real Li-ion replacement cost (~$400,000/MWh capital, ~4000 cycles).
     # Forces controllers to value cycles, not just spam them.
-    battery_wear_cost_per_kwh: float = 50.0
+    battery_wear_cost_per_mwh: float = 50.0
 
-    # Demand charge: $/kW based on the HIGHEST single-step import seen in the
+    # Demand charge: $/MW based on the HIGHEST single-step import seen in the
     # run. Real commercial bills do this monthly — one big spike costs you
     # for the whole period, not just the spike step. Forces peak-shaving
     # discipline distinct from "just don't blackout".
     # Billed incrementally: each step, only the *new* peak above the prior
-    # peak is charged, so total = peak_import_kw * demand_charge_per_kw.
-    demand_charge_per_kw: float = 1000.0
+    # peak is charged, so total = peak_import_mw * demand_charge_per_mw.
+    demand_charge_per_mw: float = 1000.0
 
     # Carbon price: charges every kg of CO2 emitted from imports + diesel.
     # Real-world calibration:
     #   - AU carbon price ~$50/tonne AUD = $0.05/kg -> $50/kg in city-scale
-    #   - NSW/QLD grid intensity ~0.7 kg CO2/kWh (fossil-heavy)
-    #   - Diesel intensity ~0.27 kg CO2/kWh (fixed by chemistry)
+    #   - NSW/QLD grid intensity ~0.7 kg CO2/MWh (fossil-heavy)
+    #   - Diesel intensity ~0.27 kg CO2/MWh (fixed by chemistry)
     # Exports earn nothing on carbon — you're sending clean power TO the grid.
     # Scenarios can override grid_co2_intensity via state["grid_co2_intensity"]
     # (e.g., 0.05 for Tasmania hydro, 0.8 for QLD coal).
     carbon_price_per_kg: float = 50.0
-    grid_co2_intensity_kg_per_kwh: float = 0.7
-    diesel_co2_intensity_kg_per_kwh: float = 0.27
+    grid_co2_intensity_kg_per_mwh: float = 0.7
+    diesel_co2_intensity_kg_per_mwh: float = 0.27
 
     # Ramp charge: quadratic penalty on changes in net grid power between
     # steps. Real-world equivalent: AEMO's FCAS markets pay for smoothness.
     # cost = (grid_power[t] - grid_power[t-1])^2 * rate
-    #   - 50 kW ramp → 2500 × 1.0 = $2500
-    #   - 100 kW ramp → 10000 × 1.0 = $10000
-    #   - 10 kW ramp → 100 × 1.0 = $100
+    #   - 50 MW ramp → 2500 × 1.0 = $2500
+    #   - 100 MW ramp → 10000 × 1.0 = $10000
+    #   - 10 MW ramp → 100 × 1.0 = $100
     # Quadratic shape rewards smooth dispatch disproportionately over jagged.
     # First step has no prior grid power, so its ramp charge is zero.
     ramp_charge_per_kw2: float = 1.0
@@ -89,10 +90,10 @@ class SimulationConfig:
     # they're called. Hornsdale (Tesla SA) earns ~$10M/year on FCAS alone.
     #
     # The trade-off, made obvious to the controller:
-    #   |battery_flow_kw| + fcas_reserve_kw <= max_inverter_kw
-    # Every kW you commit to FCAS is a kW you cannot use for arbitrage.
+    #   |battery_flow_mw| + fcas_reserve_mw <= max_inverter_mw
+    # Every MW you commit to FCAS is a MW you cannot use for arbitrage.
     #
-    # Calibration: $40.00/kW/hour ≈ real AEMO contingency-FCAS rates at city scale. Caps the
+    # Calibration: $40.00/MW/hour ≈ real AEMO contingency-FCAS rates at city scale. Caps the
     # max revenue from full FCAS reservation at ~$48,000/day on a 50 MW inverter,
     # comparable to good arbitrage. Neither strategy dominates the other.
     fcas_revenue_per_kw_per_hour: float = 40.0
@@ -115,19 +116,19 @@ class SimulationConfig:
     #   max_export_kw_override: float — penalise net exports above this
     #     ceiling (i.e. abs(net_grid_power) above this when exporting).
     #
-    # Penalties are MODERATE — well above battery wear (~$50/kWh) so
-    # ignoring them is costly, but well below blackouts ($10000/kWh) so a
+    # Penalties are MODERATE — well above battery wear (~$50/MWh) so
+    # ignoring them is costly, but well below blackouts ($10000/MWh) so a
     # controller can prefer compliance breach to load shedding in a
     # genuine emergency. This is the design: compliance is a soft
     # operational constraint, not a hard physics one.
     compliance_soc_penalty_per_unit: float = 200000.00  # $/SOC-unit short, per step
-    compliance_export_penalty_per_kw: float = 50000.00  # $/kW exceeded, per step
+    compliance_export_penalty_per_mw: float = 50000.00  # $/MW exceeded, per step
 
     # ---------------- Diesel ban + exemption mechanic ----------------
     # Scenarios may declare ``diesel_ban_window`` events (with a
     # ``directive_id`` and an active step range). During an active ban
     # the engine still lets the controller fire diesel — physics is
-    # physics — but charges a per-kWh penalty unless the controller
+    # physics — but charges a per-MWh penalty unless the controller
     # has submitted a valid emergency exemption in ``agent_plan``.
     #
     # The exemption itself is a small structured document the LLM must
@@ -142,19 +143,19 @@ class SimulationConfig:
     # pull the ``directive_id`` out of the announcing alert text, but
     # can't compose a credible 60-char justification anchored to the
     # current operational context. An LLM does both naturally.
-    diesel_ban_penalty_per_kwh: float = 3000.00  # $/kWh of diesel during a ban with no exemption
+    diesel_ban_penalty_per_mwh: float = 3000.00  # $/MWh of diesel during a ban with no exemption
     min_exemption_reason_chars: int = 60
     max_exemption_duration_steps: int = 12
 
     # Forecast configuration (lookahead with growing noise)
     forecast_horizon: int = 16  # how many future steps the controller sees
-    forecast_sigma_demand: float = 3.0  # additive noise std (kW)
-    forecast_sigma_price: float = 20.0  # additive noise std ($/kWh)
+    forecast_sigma_demand: float = 3.0  # additive noise std (MW)
+    forecast_sigma_price: float = 20.0  # additive noise std ($/MWh)
     forecast_solar_noise_pct: float = (
         0.12  # multiplicative noise std (fraction of actual solar)
     )
-    forecast_mu_demand: float = 0.0  # persistent bias (kW)
-    forecast_mu_price: float = 0.0  # persistent bias ($/kWh)
+    forecast_mu_demand: float = 0.0  # persistent bias (MW)
+    forecast_mu_price: float = 0.0  # persistent bias ($/MWh)
     forecast_solar_mu_pct: float = 0.0  # persistent bias (fraction of actual solar)
     forecast_ar1_rho: float = 0.7  # AR(1) autocorrelation coefficient for error drift
     forecast_seed: int | None = None  # set for reproducible noise; None = random
@@ -191,10 +192,11 @@ _CONTROLLER_PUBLIC_KEYS: frozenset[str] = frozenset(
         "scenario_id",
         "grid_co2_intensity",
         # Bookkeeping the controller earned and may want to read
-        "peak_import_kw",
-        "prev_grid_power_kw",
-        "battery_throughput_remaining_kwh",
-        "battery_throughput_budget_kwh",
+        "peak_import_mw",
+        "prev_grid_power_mw",
+        "prev_fcas_reserve_mw",
+        "battery_throughput_remaining_mwh",
+        "battery_throughput_budget_mwh",
         "fcas_events_upcoming",
 
         # Channels for agentic strategies
@@ -280,7 +282,7 @@ class Engine(SimulationEngine):
         time = int(state.get("time", state.get("t", 0)))
 
         # 1. Inputs
-        demand_kw, solar_kw, soc, import_price = self._read_inputs(state, time)
+        demand_mw, solar_mw, soc, import_price = self._read_inputs(state, time)
 
         # 2. Feature gate — scenarios declare which actions are available.
         #    Missing features dict = all features on (backwards compatible).
@@ -289,11 +291,11 @@ class Engine(SimulationEngine):
         # 3. Physics
         physics = self._physics_step(
             action,
-            demand_kw,
-            solar_kw,
+            demand_mw,
+            solar_mw,
             soc,
-            battery_throughput_remaining_kwh=state.get(
-                "battery_throughput_remaining_kwh"
+            battery_throughput_remaining_mwh=state.get(
+                "battery_throughput_remaining_mwh"
             ),
         )
 
@@ -327,7 +329,7 @@ class Engine(SimulationEngine):
         gated = dict(action)  # shallow copy so we don't mutate the caller's dict
 
         if not features.get("battery", True):
-            gated["battery_flow_kw"] = 0.0
+            gated["battery_flow_mw"] = 0.0
 
         if not features.get("curtailment", True):
             gated["curtail_solar"] = 0.0
@@ -336,7 +338,7 @@ class Engine(SimulationEngine):
             gated["emergency_generator"] = 0.0
 
         if not features.get("fcas", True):
-            gated["fcas_reserve_kw"] = 0.0
+            gated["fcas_reserve_mw"] = 0.0
 
         if not features.get("ids", True):
             gated["subscribe_ids"] = (
@@ -354,19 +356,19 @@ class Engine(SimulationEngine):
 
     def _read_inputs(self, state: dict, time: int) -> tuple[float, float, float, float]:
         """Pull the four scalars the engine needs at time t."""
-        demand_kw = self._series_at(
+        demand_mw = self._series_at(
             self._full_profile_series(state, "demand"),
             time,
             state.get("_demand_true", state.get("demand", 0.0)),
         )
-        solar_kw = self._series_at(
+        solar_mw = self._series_at(
             self._full_profile_series(state, "solar"),
             time,
             state.get("_solar_true", state.get("solar", 0.0)),
         )
         soc = self._clip(float(state.get("_soc_true", state.get("soc", 0.0))), 0.0, 1.0)
         import_price = self._resolve_import_price(state, time)
-        return demand_kw, solar_kw, soc, import_price
+        return demand_mw, solar_mw, soc, import_price
 
     def _resolve_import_price(self, state: dict, time: int) -> float:
         """Look up the price for ``time``, preferring the full price profile.
@@ -393,16 +395,16 @@ class Engine(SimulationEngine):
         action: dict,
     ) -> dict:
         """Resolve per-scenario market params and run the cost calculation."""
-        prev_peak = float(state.get("peak_import_kw", 0.0))
+        prev_peak = float(state.get("peak_import_mw", 0.0))
         new_peak = max(prev_peak, max(0.0, physics.net_grid_power))
         grid_co2 = float(
             state.get(
                 "grid_co2_intensity",
-                self.config.grid_co2_intensity_kg_per_kwh,
+                self.config.grid_co2_intensity_kg_per_mwh,
             )
         )
         # Sentinel: missing on first step → ramp charge is 0
-        prev_grid_power = state.get("prev_grid_power_kw")
+        prev_grid_power = state.get("prev_grid_power_mw")
 
         soc_after = float(physics.next_soc)
         events_full = self._full_events(state)
@@ -415,13 +417,13 @@ class Engine(SimulationEngine):
         subscribe_ids = bool(action.get("subscribe_ids", False))
         ids_cost_per_step = float(state.get("ids_cost_per_step", 0.0))
 
-        # Diesel-ban: charge a per-kWh penalty if diesel ran inside an
+        # Diesel-ban: charge a per-MWh penalty if diesel ran inside an
         # active ban window AND no valid exemption is held in agent_plan.
-        diesel_ban_penalty_kwh = self._diesel_ban_penalty_kwh(
+        diesel_ban_penalty_mwh = self._diesel_ban_penalty_mwh(
             events_full,
             time,
             state.get("agent_plan"),
-            physics.emergency_generator_kw,
+            physics.emergency_generator_mw,
         )
 
         phishing_fine = self._phishing_fine(
@@ -432,77 +434,78 @@ class Engine(SimulationEngine):
         )
         
         # Calculate FCAS Dispatch Logic (mutate physics next_soc)
-        required_kw = 0.0
+        required_mw = 0.0
         for ev in events_full:
             if ev.get("type") == "fcas_dispatch":
                 at_step = int(ev.get("at_step", -1))
                 end_step = int(ev.get("end_step", at_step))
                 if at_step <= time <= end_step:
-                    required_kw += float(ev.get("magnitude_kw", 0.0))
+                    required_mw += float(ev.get("magnitude_mw", 0.0))
         
-        deliverable_kw = 0.0
+        deliverable_mw = 0.0
         actual_delivery = 0.0
         shortfall = 0.0
         
-        if required_kw > 0:
+        if required_mw > 0:
             # How much can we sustain for 1 hour from current SOC?
-            soc_backed_capacity = (soc_after * self.config.battery_capacity_kwh * self.config.discharge_efficiency) / 1.0 
-            deliverable_kw = min(physics.fcas_reserve_kw, soc_backed_capacity)
-            actual_delivery = min(deliverable_kw, required_kw)
-            shortfall = max(0.0, required_kw - actual_delivery)
+            soc_backed_capacity = (soc_after * self.config.battery_capacity_mwh * self.config.discharge_efficiency) / 1.0 
+            deliverable_mw = min(physics.fcas_reserve_mw, soc_backed_capacity)
+            actual_delivery = min(deliverable_mw, required_mw)
+            shortfall = max(0.0, required_mw - actual_delivery)
             
             # Reduce SOC by the energy delivered
             if actual_delivery > 0:
                 physics.next_soc -= (actual_delivery * self.config.dt_hours) / (
-                    self.config.battery_capacity_kwh * self.config.discharge_efficiency
+                    self.config.battery_capacity_mwh * self.config.discharge_efficiency
                 )
                 physics.next_soc = max(0.0, physics.next_soc)
                 
-        physics.fcas_dispatch_required_kw = required_kw
-        physics.fcas_dispatch_delivered_kw = actual_delivery
-        physics.fcas_shortfall_kw = shortfall
+        physics.fcas_dispatch_required_mw = required_mw
+        physics.fcas_dispatch_delivered_mw = actual_delivery
+        physics.fcas_shortfall_mw = shortfall
 
         return self._market_step(
             net_grid_power=physics.net_grid_power,
             import_price=import_price,
             unmet_demand=physics.unmet_demand,
-            emergency_generator_kw=physics.emergency_generator_kw,
-            overvoltage_kw=physics.overvoltage_kw,
-            battery_kw=physics.battery_kw,
-            fcas_reserve_kw=physics.fcas_reserve_kw,
-            fcas_dispatch_delivered_kw=actual_delivery,
-            fcas_shortfall_kw=shortfall,
-            new_peak_import_kw=new_peak,
-            prev_peak_import_kw=prev_peak,
+            emergency_generator_mw=physics.emergency_generator_mw,
+            overvoltage_mw=physics.overvoltage_mw,
+            battery_mw=physics.battery_mw,
+            fcas_reserve_mw=physics.fcas_reserve_mw,
+            fcas_dispatch_delivered_mw=actual_delivery,
+            fcas_shortfall_mw=shortfall,
+            new_peak_import_mw=new_peak,
+            prev_peak_import_mw=prev_peak,
             grid_co2_intensity=grid_co2,
-            prev_grid_power_kw=prev_grid_power,
+            prev_grid_power_mw=prev_grid_power,
             compliance_soc_shortfall=compliance["soc_shortfall"],
-            compliance_export_excess_kw=compliance["export_excess_kw"],
+            compliance_export_excess_mw=compliance["export_excess_mw"],
             subscribe_ids=subscribe_ids,
             ids_cost_per_step=ids_cost_per_step,
-            diesel_ban_penalty_kwh=diesel_ban_penalty_kwh,
+            diesel_ban_penalty_mwh=diesel_ban_penalty_mwh,
             phishing_fine=phishing_fine,
+            prev_fcas_reserve_mw=float(state.get("prev_fcas_reserve_mw", 0.0)),
         )
 
-    def _diesel_ban_penalty_kwh(
+    def _diesel_ban_penalty_mwh(
         self,
         events: list[dict],
         time: int,
         agent_plan: dict | None,
-        diesel_kw: float,
+        diesel_mw: float,
     ) -> float:
-        """Return the diesel-ban-penalty kWh quantity to charge this step.
+        """Return the diesel-ban-penalty MWh quantity to charge this step.
 
         Returns 0 unless ALL of:
           - a ``diesel_ban_window`` event is active at ``time``,
-          - the controller ran diesel (``diesel_kw > 0``),
+          - the controller ran diesel (``diesel_mw > 0``),
           - and ``agent_plan["emergency_exemption"]`` does NOT match the
             acceptor criteria for the active ban's ``directive_id``.
 
-        The amount returned is ``diesel_kw * dt_hours`` so the caller can
-        multiply by ``$/kWh`` and produce a clean cost line.
+        The amount returned is ``diesel_mw * dt_hours`` so the caller can
+        multiply by ``$/MWh`` and produce a clean cost line.
         """
-        if diesel_kw <= 0:
+        if diesel_mw <= 0:
             return 0.0
         active_id: str | None = None
         for ev in events:
@@ -519,7 +522,7 @@ class Engine(SimulationEngine):
         if self._exemption_valid(agent_plan, active_id):
             return 0.0
 
-        return diesel_kw * self.config.dt_hours
+        return diesel_mw * self.config.dt_hours
 
     @staticmethod
     def _phishing_fine(
@@ -557,7 +560,7 @@ class Engine(SimulationEngine):
     # mentions at least one of these. Pure canned text without
     # operational vocabulary is rejected.
     _EXEMPTION_OPERATIONAL_KEYWORDS: tuple[str, ...] = (
-        "kw",
+        "mw",
         "soc",
         "demand",
         "deficit",
@@ -603,7 +606,7 @@ class Engine(SimulationEngine):
         if not any(c.isdigit() for c in reason):
             return False
         reason_lower = reason.lower()
-        if not any(kw in reason_lower for kw in self._EXEMPTION_OPERATIONAL_KEYWORDS):
+        if not any(mw in reason_lower for mw in self._EXEMPTION_OPERATIONAL_KEYWORDS):
             return False
         duration = ex.get("expected_duration_steps")
         # Reject booleans — they're a subclass of int in Python and we
@@ -619,7 +622,7 @@ class Engine(SimulationEngine):
         events: list[dict],
         time: int,
         soc_after: float,
-        net_grid_power_kw: float,
+        net_grid_power_mw: float,
     ) -> dict[str, float]:
         """Return per-step compliance shortfalls implied by any active
         ``compliance_window`` events.
@@ -638,14 +641,14 @@ class Engine(SimulationEngine):
 
         Penalty values are per-step:
           * SOC shortfall: ``(floor - soc) * compliance_soc_penalty_per_unit``
-          * Export excess: ``(export_kw - cap) * dt * compliance_export_penalty_per_kw``
+          * Export excess: ``(export_mw - cap) * dt * compliance_export_penalty_per_mw``
 
         Multiple active windows accumulate.
         """
         soc_shortfall = 0.0
         soc_excess = 0.0
         export_excess = 0.0
-        export_kw = max(0.0, -net_grid_power_kw)
+        export_mw = max(0.0, -net_grid_power_mw)
 
         for ev in events:
             if ev.get("type") != "compliance_window":
@@ -665,12 +668,12 @@ class Engine(SimulationEngine):
                 soc_excess += max(0.0, soc_after - float(ceiling)) * multiplier
 
             cap = ev.get("max_export_kw_override")
-            if isinstance(cap, (int, float)) and export_kw > 0:
-                export_excess += max(0.0, export_kw - float(cap)) * multiplier
+            if isinstance(cap, (int, float)) and export_mw > 0:
+                export_excess += max(0.0, export_mw - float(cap)) * multiplier
 
         return {
             "soc_shortfall": soc_shortfall + soc_excess,
-            "export_excess_kw": export_excess,
+            "export_excess_mw": export_excess,
         }
 
     def _build_outputs(
@@ -682,14 +685,14 @@ class Engine(SimulationEngine):
         return {
             "net_grid_power": physics.net_grid_power,
             "unmet_demand": physics.unmet_demand,
-            "overvoltage_kw": physics.overvoltage_kw,
-            "battery_dispatch": physics.battery_kw,
-            "emergency_generator": physics.emergency_generator_kw,
-            "curtailed_solar": physics.curtailed_solar_kw,
-            "fcas_reserve": physics.fcas_reserve_kw,
-            "fcas_dispatch_required": physics.fcas_dispatch_required_kw,
-            "fcas_dispatch_delivered": physics.fcas_dispatch_delivered_kw,
-            "fcas_shortfall": physics.fcas_shortfall_kw,
+            "overvoltage_mw": physics.overvoltage_mw,
+            "battery_dispatch": physics.battery_mw,
+            "emergency_generator": physics.emergency_generator_mw,
+            "curtailed_solar": physics.curtailed_solar_mw,
+            "fcas_reserve": physics.fcas_reserve_mw,
+            "fcas_dispatch_required": physics.fcas_dispatch_required_mw,
+            "fcas_dispatch_delivered": physics.fcas_dispatch_delivered_mw,
+            "fcas_shortfall": physics.fcas_shortfall_mw,
             "import_price": float(import_price),
             "export_price": float(self.config.export_tariff),
             "step_cost": float(cost_breakdown["total"]),
@@ -715,25 +718,26 @@ class Engine(SimulationEngine):
         new_state["soc"] = self._corrupt_sensor(new_state, "soc", float(physics.next_soc), next_time)
 
         # Bookkeeping for cost components that span steps
-        new_state["peak_import_kw"] = max(
-            float(state.get("peak_import_kw", 0.0)),
+        new_state["peak_import_mw"] = max(
+            float(state.get("peak_import_mw", 0.0)),
             max(0.0, physics.net_grid_power),
         )
-        new_state["prev_grid_power_kw"] = float(physics.net_grid_power)
+        new_state["prev_grid_power_mw"] = float(physics.net_grid_power)
+        new_state["prev_fcas_reserve_mw"] = float(physics.fcas_reserve_mw)
 
-        # Throughput budget: decrement by |kWh| moved through the battery
+        # Throughput budget: decrement by |MWh| moved through the battery
         # this step. Only tracked when the scenario opted in (initial value
         # is not None).
         dt = self.config.dt_hours
         total_throughput_this_step = (
-            abs(physics.battery_kw) +
-            (physics.fcas_reserve_kw * self.config.fcas_micro_cycling_factor) +
-            physics.fcas_dispatch_delivered_kw
+            abs(physics.battery_mw) +
+            (physics.fcas_reserve_mw * self.config.fcas_micro_cycling_factor) +
+            physics.fcas_dispatch_delivered_mw
         ) * dt
 
-        budget = state.get("battery_throughput_remaining_kwh")
+        budget = state.get("battery_throughput_remaining_mwh")
         if budget is not None:
-            new_state["battery_throughput_remaining_kwh"] = max(
+            new_state["battery_throughput_remaining_mwh"] = max(
                 0.0,
                 float(budget) - total_throughput_this_step,
             )
@@ -858,7 +862,7 @@ class Engine(SimulationEngine):
                     out.append({
                         "at_step": at_step,
                         "end_step": end_step,
-                        "magnitude_kw": float(ev.get("magnitude_kw", 0.0))
+                        "magnitude_mw": float(ev.get("magnitude_mw", 0.0))
                     })
         return sorted(out, key=lambda x: x["at_step"])
 
@@ -1091,9 +1095,9 @@ class Engine(SimulationEngine):
                 #   - solar: multiplicative (`bias` is a fraction of actual).
                 #     +0.5 → forecast shows 50% more solar than will arrive
                 #     ("looks sunny but won't be")
-                #   - demand: additive in kW.
-                #     -20 → forecast under-predicts by 20 kW
-                #   - price: additive in $/kWh.
+                #   - demand: additive in MW.
+                #     -20 → forecast under-predicts by 20 MW
+                #   - price: additive in $/MWh.
                 #     +0.10 → forecast over-predicts a price spike
                 #
                 # Bias stacks with the AR(1) noise — it is a persistent shift
@@ -1125,10 +1129,10 @@ class Engine(SimulationEngine):
     def _physics_step(
         self,
         action: dict,
-        demand_kw: float,
-        solar_kw: float,
+        demand_mw: float,
+        solar_mw: float,
         soc: float,
-        battery_throughput_remaining_kwh: float | None = None,
+        battery_throughput_remaining_mwh: float | None = None,
     ) -> PhysicsResult:
         """Apply battery + generator + curtailment, then clip the resulting
         net grid power against the import/export limits. Returns named
@@ -1137,78 +1141,78 @@ class Engine(SimulationEngine):
         """
         cfg = self.config
 
-        # FCAS reserve gets first claim on the inverter. Any kW reserved
+        # FCAS reserve gets first claim on the inverter. Any MW reserved
         # for FCAS is unavailable for arbitrage this step.
-        fcas_reserve_kw = self._clip(
-            float(action.get("fcas_reserve_kw", 0.0)),
+        fcas_reserve_mw = self._clip(
+            float(action.get("fcas_reserve_mw", 0.0)),
             0.0,
-            cfg.max_inverter_kw,
+            cfg.max_inverter_mw,
         )
-        battery_inverter_budget = cfg.max_inverter_kw - fcas_reserve_kw
+        battery_inverter_budget = cfg.max_inverter_mw - fcas_reserve_mw
 
-        # Throughput budget: scenarios may cap the total |kWh| moved
+        # Throughput budget: scenarios may cap the total |MWh| moved
         # through the battery across the run. When set, the remaining
         # budget further clips this step's dispatch magnitude.
-        if battery_throughput_remaining_kwh is not None:
+        if battery_throughput_remaining_mwh is not None:
             # We subtract the FCAS micro-cycling portion of the budget
             # because even if the battery doesn't dispatch for arbitrage,
             # holding reserve cycles the inverter/cells.
             fcas_cycling_cost = (
-                fcas_reserve_kw * cfg.fcas_micro_cycling_factor * cfg.dt_hours
+                fcas_reserve_mw * cfg.fcas_micro_cycling_factor * cfg.dt_hours
             )
             budget_kw_cap = max(
-                0.0, (float(battery_throughput_remaining_kwh) - fcas_cycling_cost) / cfg.dt_hours
+                0.0, (float(battery_throughput_remaining_mwh) - fcas_cycling_cost) / cfg.dt_hours
             )
             battery_inverter_budget = min(battery_inverter_budget, budget_kw_cap)
 
         # Battery: clip to remaining inverter capacity (after FCAS) and SOC bounds
-        requested_battery_kw = float(action.get("battery_flow_kw", 0.0))
-        battery_kw = self._feasible_battery_power(
-            requested_battery_kw,
+        requested_battery_mw = float(action.get("battery_flow_mw", 0.0))
+        battery_mw = self._feasible_battery_power(
+            requested_battery_mw,
             soc,
             inverter_limit=battery_inverter_budget,
         )
-        next_soc = self._next_soc(soc, battery_kw)
+        next_soc = self._next_soc(soc, battery_mw)
 
         # Diesel: simple [0, max] clip
-        emergency_generator_kw = self._clip(
+        emergency_generator_mw = self._clip(
             float(action.get("emergency_generator", 0.0)),
             0.0,
-            cfg.max_emergency_generator_kw,
+            cfg.max_emergency_generator_mw,
         )
 
         # Curtailment: can't curtail more than the available solar
-        curtailed_solar_kw = self._clip(
+        curtailed_solar_mw = self._clip(
             float(action.get("curtail_solar", 0.0)),
             0.0,
-            solar_kw,
+            solar_mw,
         )
-        actual_solar_kw = solar_kw - curtailed_solar_kw
+        actual_solar_mw = solar_mw - curtailed_solar_mw
 
         # Power balance — what the grid has to make up
         net_grid_power = (
-            demand_kw - actual_solar_kw - battery_kw - emergency_generator_kw
+            demand_mw - actual_solar_mw - battery_mw - emergency_generator_mw
         )
 
         # Clip against grid import/export limits, capturing any overflow
         unmet_demand = 0.0
-        overvoltage_kw = 0.0
-        if net_grid_power > cfg.grid_max_import_kw:
-            unmet_demand = net_grid_power - cfg.grid_max_import_kw
-            net_grid_power = cfg.grid_max_import_kw
-        elif net_grid_power < -cfg.grid_max_export_kw:
-            overvoltage_kw = abs(net_grid_power) - cfg.grid_max_export_kw
-            net_grid_power = -cfg.grid_max_export_kw
+        overvoltage_mw = 0.0
+        if net_grid_power > cfg.grid_max_import_mw:
+            unmet_demand = net_grid_power - cfg.grid_max_import_mw
+            net_grid_power = cfg.grid_max_import_mw
+        elif net_grid_power < -cfg.grid_max_export_mw:
+            overvoltage_mw = abs(net_grid_power) - cfg.grid_max_export_mw
+            net_grid_power = -cfg.grid_max_export_mw
 
         return PhysicsResult(
             next_soc=next_soc,
-            battery_kw=battery_kw,
-            emergency_generator_kw=emergency_generator_kw,
-            curtailed_solar_kw=curtailed_solar_kw,
+            battery_mw=battery_mw,
+            emergency_generator_mw=emergency_generator_mw,
+            curtailed_solar_mw=curtailed_solar_mw,
             net_grid_power=net_grid_power,
             unmet_demand=unmet_demand,
-            overvoltage_kw=overvoltage_kw,
-            fcas_reserve_kw=fcas_reserve_kw,
+            overvoltage_mw=overvoltage_mw,
+            fcas_reserve_mw=fcas_reserve_mw,
         )
 
     def _market_step(
@@ -1217,21 +1221,22 @@ class Engine(SimulationEngine):
         net_grid_power: float,
         import_price: float,
         unmet_demand: float,
-        emergency_generator_kw: float,
-        overvoltage_kw: float,
-        battery_kw: float,
-        fcas_reserve_kw: float,
-        fcas_dispatch_delivered_kw: float = 0.0,
-        fcas_shortfall_kw: float = 0.0,
-        prev_peak_import_kw: float,
-        new_peak_import_kw: float,
+        emergency_generator_mw: float,
+        overvoltage_mw: float,
+        battery_mw: float,
+        fcas_reserve_mw: float,
+        prev_fcas_reserve_mw: float,
+        fcas_dispatch_delivered_mw: float = 0.0,
+        fcas_shortfall_mw: float = 0.0,
+        prev_peak_import_mw: float,
+        new_peak_import_mw: float,
         grid_co2_intensity: float,
-        prev_grid_power_kw: float | None,
+        prev_grid_power_mw: float | None,
         compliance_soc_shortfall: float = 0.0,
-        compliance_export_excess_kw: float = 0.0,
+        compliance_export_excess_mw: float = 0.0,
         subscribe_ids: bool = False,
         ids_cost_per_step: float = 0.0,
-        diesel_ban_penalty_kwh: float = 0.0,
+        diesel_ban_penalty_mwh: float = 0.0,
         phishing_fine: float = 0.0,
     ) -> dict:
         """Calculate every cost component for this timestep.
@@ -1248,74 +1253,76 @@ class Engine(SimulationEngine):
         """
         dt = self.config.dt_hours
         cfg = self.config
-        energy_kwh = net_grid_power * dt
+        energy_mwh = net_grid_power * dt
 
         # Tariff is split into import and export lines so the dashboard can
         # tell a player how much they earned in exports vs paid in imports
         # (a single net value masks the partition for any mixed day).
-        if energy_kwh > 0:
-            tariff_import = energy_kwh * import_price  # positive, cost
+        if energy_mwh > 0:
+            tariff_import = energy_mwh * import_price  # positive, cost
             tariff_export = 0.0
         else:
             tariff_import = 0.0
-            tariff_export = energy_kwh * cfg.export_tariff  # negative, revenue
+            tariff_export = energy_mwh * cfg.export_tariff  # negative, revenue
 
         # Carbon: imports (positive grid power) and diesel both emit. Exports
         # are clean power leaving the city — they don't earn carbon credit
         # here, just the export tariff.
-        import_kwh = max(0.0, energy_kwh)
-        diesel_kwh = emergency_generator_kw * dt
+        import_mwh = max(0.0, energy_mwh)
+        diesel_mwh = emergency_generator_mw * dt
         co2_kg = (
-            import_kwh * grid_co2_intensity
-            + diesel_kwh * cfg.diesel_co2_intensity_kg_per_kwh
+            import_mwh * grid_co2_intensity
+            + diesel_mwh * cfg.diesel_co2_intensity_kg_per_mwh
         )
 
         # Ramp: quadratic penalty on the change in net grid power. First
         # step has no prior reference, so its ramp charge is zero.
-        if prev_grid_power_kw is None:
+        if prev_grid_power_mw is None:
             ramp_charge = 0.0
         else:
-            ramp_kw = net_grid_power - prev_grid_power_kw
-            ramp_charge = (ramp_kw**2) * cfg.ramp_charge_per_kw2
+            ramp_mw = net_grid_power - prev_grid_power_mw
+            ramp_charge = (ramp_mw**2) * cfg.ramp_charge_per_kw2
 
         components = {
             "tariff_import": tariff_import,
             "tariff_export": tariff_export,
-            "generator_fuel": emergency_generator_kw
+            "generator_fuel": emergency_generator_mw
             * dt
-            * cfg.emergency_generator_cost_per_kwh,
-            "blackout_penalty": unmet_demand * dt * cfg.blackout_penalty_per_kwh,
-            "overvoltage_penalty": overvoltage_kw
+            * cfg.emergency_generator_cost_per_mwh,
+            "blackout_penalty": unmet_demand * dt * cfg.blackout_penalty_per_mwh,
+            "overvoltage_penalty": overvoltage_mw
             * dt
-            * cfg.overvoltage_penalty_per_kwh,
-            "battery_wear": abs(battery_kw) * dt * cfg.battery_wear_cost_per_kwh,
+            * cfg.overvoltage_penalty_per_mwh,
+            "battery_wear": abs(battery_mw) * dt * cfg.battery_wear_cost_per_mwh,
             # Demand charge: incremental — only the rise above prior peak is billed
             # this step, so the running cumulative charge equals (peak * rate).
-            "demand_charge": max(0.0, new_peak_import_kw - prev_peak_import_kw)
-            * cfg.demand_charge_per_kw,
+            "demand_charge": max(0.0, new_peak_import_mw - prev_peak_import_mw)
+            * cfg.demand_charge_per_mw,
             "carbon_cost": co2_kg * cfg.carbon_price_per_kg,
             "ramp_charge": ramp_charge,
             # FCAS revenue: NEGATIVE cost (income) for capacity held available.
-            "fcas_revenue": -fcas_reserve_kw * dt * cfg.fcas_revenue_per_kw_per_hour,
+            "fcas_revenue": -fcas_reserve_mw * dt * cfg.fcas_revenue_per_kw_per_hour,
+            # FCAS ramp: penalty for volatility in reserve capacity
+            "fcas_ramp_charge": abs(fcas_reserve_mw - prev_fcas_reserve_mw) * cfg.fcas_ramp_penalty_per_mw,
             # Compliance: zero by default; only positive when the controller
             # opted in via agent_plan AND breached the bound it set.
             "compliance_penalty": (
                 compliance_soc_shortfall * cfg.compliance_soc_penalty_per_unit
-                + compliance_export_excess_kw
+                + compliance_export_excess_mw
                 * dt
-                * cfg.compliance_export_penalty_per_kw
+                * cfg.compliance_export_penalty_per_mw
             ),
             # IDS cost: flat fee per step when controller subscribes to the
             # intrusion detection signal. Only active on cybersecurity scenario.
             "ids_cost": ids_cost_per_step if subscribe_ids else 0.0,
-            # Diesel-ban penalty: per-kWh charge when diesel runs inside an
+            # Diesel-ban penalty: per-MWh charge when diesel runs inside an
             # active ban window without a valid agent_plan exemption.
             # Zero everywhere else.
             "diesel_ban_penalty": (
-                diesel_ban_penalty_kwh * cfg.diesel_ban_penalty_per_kwh
+                diesel_ban_penalty_mwh * cfg.diesel_ban_penalty_per_mwh
             ),
-            "fcas_dispatch_bonus": -fcas_dispatch_delivered_kw * dt * cfg.fcas_dispatch_bonus_per_kwh,
-            "fcas_shortfall_penalty": fcas_shortfall_kw * dt * cfg.fcas_shortfall_penalty_per_kwh,
+            "fcas_dispatch_bonus": -fcas_dispatch_delivered_mw * dt * cfg.fcas_dispatch_bonus_per_mwh,
+            "fcas_shortfall_penalty": fcas_shortfall_mw * dt * cfg.fcas_shortfall_penalty_per_mwh,
             "phishing_fine": phishing_fine,
         }
 
@@ -1326,45 +1333,45 @@ class Engine(SimulationEngine):
 
     def _feasible_battery_power(
         self,
-        requested_kw: float,
+        requested_mw: float,
         soc: float,
         inverter_limit: float | None = None,
     ) -> float:
         """Clip a requested battery dispatch to:
-        1. The inverter limit (default = max_inverter_kw, but FCAS reserve
+        1. The inverter limit (default = max_inverter_mw, but FCAS reserve
            can shrink the effective budget for this step).
         2. The energy available in the battery (discharge can't exceed
            what's stored; charge can't exceed remaining headroom).
         """
         cfg = self.config
         limit = (
-            cfg.max_inverter_kw if inverter_limit is None else max(0.0, inverter_limit)
+            cfg.max_inverter_mw if inverter_limit is None else max(0.0, inverter_limit)
         )
-        clipped_kw = self._clip(requested_kw, -limit, limit)
+        clipped_mw = self._clip(requested_mw, -limit, limit)
 
-        if clipped_kw > 0.0:
-            max_discharge_kw = (
-                soc * cfg.battery_capacity_kwh * cfg.discharge_efficiency
+        if clipped_mw > 0.0:
+            max_discharge_mw = (
+                soc * cfg.battery_capacity_mwh * cfg.discharge_efficiency
             ) / cfg.dt_hours
-            return min(clipped_kw, max_discharge_kw)
+            return min(clipped_mw, max_discharge_mw)
 
-        if clipped_kw < 0.0:
-            headroom_kwh = (1.0 - soc) * cfg.battery_capacity_kwh
-            max_charge_kw = headroom_kwh / (cfg.charge_efficiency * cfg.dt_hours)
-            return max(clipped_kw, -max_charge_kw)
+        if clipped_mw < 0.0:
+            headroom_mwh = (1.0 - soc) * cfg.battery_capacity_mwh
+            max_charge_mw = headroom_mwh / (cfg.charge_efficiency * cfg.dt_hours)
+            return max(clipped_mw, -max_charge_mw)
 
         return 0.0
 
-    def _next_soc(self, soc: float, battery_kw: float) -> float:
-        if battery_kw > 0.0:
-            next_soc = soc - (battery_kw * self.config.dt_hours) / (
-                self.config.battery_capacity_kwh * self.config.discharge_efficiency
+    def _next_soc(self, soc: float, battery_mw: float) -> float:
+        if battery_mw > 0.0:
+            next_soc = soc - (battery_mw * self.config.dt_hours) / (
+                self.config.battery_capacity_mwh * self.config.discharge_efficiency
             )
-        elif battery_kw < 0.0:
+        elif battery_mw < 0.0:
             next_soc = (
                 soc
-                - (battery_kw * self.config.charge_efficiency * self.config.dt_hours)
-                / self.config.battery_capacity_kwh
+                - (battery_mw * self.config.charge_efficiency * self.config.dt_hours)
+                / self.config.battery_capacity_mwh
             )
         else:
             next_soc = soc

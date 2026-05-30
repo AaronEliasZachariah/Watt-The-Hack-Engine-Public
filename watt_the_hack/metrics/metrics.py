@@ -44,26 +44,26 @@ class Metrics:
     previous_grid_power: float | None = None
 
     def update(self, state: dict, outputs: dict) -> None:
-        demand_kw = float(state.get("demand", 0.0))
-        grid_power_kw = float(outputs.get("net_grid_power", 0.0))
-        emergency_kw = float(outputs.get("emergency_generator", 0.0))
-        unmet_demand_kw = float(outputs.get("unmet_demand", 0.0))
+        demand_mw = float(state.get("demand", 0.0))
+        grid_power_mw = float(outputs.get("net_grid_power", 0.0))
+        emergency_mw = float(outputs.get("emergency_generator", 0.0))
+        unmet_demand_mw = float(outputs.get("unmet_demand", 0.0))
         step_cost = float(outputs.get("step_cost", 0.0))
 
         # Renewable serving = demand met by clean local sources (solar +
         # battery). Diesel is local but dirty, so it's excluded just like
         # grid imports.
-        clean_local_kw = max(0.0, demand_kw - max(0.0, grid_power_kw) - emergency_kw)
-        self.demand_served_locally_sum += clean_local_kw
-        self.demand_sum += demand_kw
+        clean_local_mw = max(0.0, demand_mw - max(0.0, grid_power_mw) - emergency_mw)
+        self.demand_served_locally_sum += clean_local_mw
+        self.demand_sum += demand_mw
 
         if self.previous_grid_power is not None:
-            ramp_kw = grid_power_kw - self.previous_grid_power
-            self.grid_stability_sum -= ramp_kw**2
-        self.previous_grid_power = grid_power_kw
+            ramp_mw = grid_power_mw - self.previous_grid_power
+            self.grid_stability_sum -= ramp_mw**2
+        self.previous_grid_power = grid_power_mw
 
         self.cost_sum += step_cost
-        self.unmet_demand_sum += unmet_demand_kw * self.dt_hours
+        self.unmet_demand_sum += unmet_demand_mw * self.dt_hours
 
     def summary(self) -> dict:
         """Return raw metrics. ``final_score`` is the accumulated dollar cost."""

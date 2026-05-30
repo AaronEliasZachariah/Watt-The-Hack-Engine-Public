@@ -10,10 +10,10 @@ class ParametricControllerParams:
     Values are passed through as constants every timestep.
     """
 
-    battery_flow_kw: float = 0.0  # kW, + discharge / - charge
-    emergency_generator: float = 0.0  # kW, clipped to [0, max_emergency_generator_kw]
-    curtail_solar: float = 0.0  # kW of solar to disconnect this step
-    fcas_reserve_kw: float = 0.0  # kW of inverter capacity held for FCAS revenue
+    battery_flow_mw: float = 0.0  # MW, + discharge / - charge
+    emergency_generator: float = 0.0  # MW, clipped to [0, max_emergency_generator_mw]
+    curtail_solar: float = 0.0  # MW of solar to disconnect this step
+    fcas_reserve_mw: float = 0.0  # MW of inverter capacity held for FCAS revenue
     subscribe_ids: bool = (
         False  # whether to subscribe to IDS events (if enabled in cybersecurity scenario)
     )
@@ -22,18 +22,18 @@ class ParametricControllerParams:
 def make_parametric_controller(params: ParametricControllerParams):
     """Return a controller that emits the parameter values verbatim each step."""
 
-    battery_flow_kw = float(params.battery_flow_kw)
+    battery_flow_mw = float(params.battery_flow_mw)
     emergency_generator = float(params.emergency_generator)
     curtail_solar = max(0.0, float(params.curtail_solar))
-    fcas_reserve_kw = max(0.0, float(params.fcas_reserve_kw))
+    fcas_reserve_mw = max(0.0, float(params.fcas_reserve_mw))
     subscribe_ids = bool(params.subscribe_ids)
 
     def controller(_state: dict[str, Any]) -> dict[str, Any]:
         return {
-            "battery_flow_kw": battery_flow_kw,
+            "battery_flow_mw": battery_flow_mw,
             "emergency_generator": emergency_generator,
             "curtail_solar": curtail_solar,
-            "fcas_reserve_kw": fcas_reserve_kw,
+            "fcas_reserve_mw": fcas_reserve_mw,
             "subscribe_ids": subscribe_ids,
         }
 
