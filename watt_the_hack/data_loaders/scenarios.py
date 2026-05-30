@@ -25,6 +25,8 @@ SCENARIOS_ROOT = (
     else Path(__file__).resolve().parents[2] / "scenarios"
 )
 
+UNIT_SCALE = 1000.0
+
 # Feature-key → mechanic-id mapping, with the engine's default-when-absent.
 # Mirrors `_gate_features` in engine.py: omit the features dict and everything
 # is enabled. New backend mechanics that gate via `features` get one row.
@@ -55,7 +57,7 @@ def load_scenario(path: str | Path) -> tuple[dict, dict]:
 
     demand = profiles["demand"]
     solar = profiles["solar"]
-    price = profiles["price"]
+    price = [float(p) * UNIT_SCALE for p in profiles["price"]] if profiles.get("price") else []
 
     # IMPORTANT: keys prefixed with `_` are ENGINE-INTERNAL. They carry the
     # full demand/solar/price profiles, the unredacted event list, attack
@@ -80,7 +82,7 @@ def load_scenario(path: str | Path) -> tuple[dict, dict]:
         "_events_full": _normalise_events(spec.get("events", [])),
         "_forecast_config_full": dict(spec["forecast"]) if "forecast" in spec else None,
         "_attack_windows_full": spec.get("attack_windows", []),
-        "ids_cost_per_step": spec.get("ids_cost_per_step", 0.0),
+        "ids_cost_per_step": float(spec.get("ids_cost_per_step", 0.0)) * UNIT_SCALE,
     }
     # Optional throughput budget: total |kWh| the battery may move across
     # the whole run. Absent (or null) = unlimited (engine ignores it).
@@ -318,7 +320,10 @@ def _normalise_events(raw_events: list[dict]) -> list[dict]:
         }
         for key, value in ev.items():
             if key not in _EVENT_CORE_FIELDS:
-                normalised[key] = value
+                if ev.get("type") == "phishing_trap" and key == "penalty":
+                    normalised[key] = float(value) * UNIT_SCALE
+                else:
+                    normalised[key] = value
         out.append(normalised)
     return out
 

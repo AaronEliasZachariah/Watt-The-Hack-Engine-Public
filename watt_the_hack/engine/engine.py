@@ -32,17 +32,17 @@ class SimulationConfig:
     dt_hours: float = 0.25
 
     # Phase 3 Realism: Split Pricing & Penalties
-    export_tariff: float = 0.05  # $0.05 flat rate for exporting solar
-    blackout_penalty_per_kwh: float = 10.00
-    emergency_generator_cost_per_kwh: float = 1.00
+    export_tariff: float = 50.0  # $50.00 flat rate for exporting solar (was 0.05)
+    blackout_penalty_per_kwh: float = 10000.00
+    emergency_generator_cost_per_kwh: float = 1000.00
     max_emergency_generator_kw: float = 50.0
-    overvoltage_penalty_per_kwh: float = 5.00  # NEW: Penalty for exporting too much
+    overvoltage_penalty_per_kwh: float = 5000.00  # NEW: Penalty for exporting too much
 
     # Battery wear: each kWh moved through the battery (charge or discharge)
-    # eats a fraction of its lifetime. Calibrated to ~$0.05/kWh throughput,
-    # matching real Li-ion replacement cost (~$400/kWh capital, ~4000 cycles).
+    # eats a fraction of its lifetime. Calibrated to ~$50/kWh throughput,
+    # matching real Li-ion replacement cost (~$400,000/kWh capital, ~4000 cycles).
     # Forces controllers to value cycles, not just spam them.
-    battery_wear_cost_per_kwh: float = 0.05
+    battery_wear_cost_per_kwh: float = 50.0
 
     # Demand charge: $/kW based on the HIGHEST single-step import seen in the
     # run. Real commercial bills do this monthly — one big spike costs you
@@ -50,29 +50,29 @@ class SimulationConfig:
     # discipline distinct from "just don't blackout".
     # Billed incrementally: each step, only the *new* peak above the prior
     # peak is charged, so total = peak_import_kw * demand_charge_per_kw.
-    demand_charge_per_kw: float = 1.0
+    demand_charge_per_kw: float = 1000.0
 
     # Carbon price: charges every kg of CO2 emitted from imports + diesel.
     # Real-world calibration:
-    #   - AU carbon price ~$50/tonne AUD = $0.05/kg
+    #   - AU carbon price ~$50/tonne AUD = $0.05/kg -> $50/kg in city-scale
     #   - NSW/QLD grid intensity ~0.7 kg CO2/kWh (fossil-heavy)
     #   - Diesel intensity ~0.27 kg CO2/kWh (fixed by chemistry)
     # Exports earn nothing on carbon — you're sending clean power TO the grid.
     # Scenarios can override grid_co2_intensity via state["grid_co2_intensity"]
     # (e.g., 0.05 for Tasmania hydro, 0.8 for QLD coal).
-    carbon_price_per_kg: float = 0.05
+    carbon_price_per_kg: float = 50.0
     grid_co2_intensity_kg_per_kwh: float = 0.7
     diesel_co2_intensity_kg_per_kwh: float = 0.27
 
     # Ramp charge: quadratic penalty on changes in net grid power between
     # steps. Real-world equivalent: AEMO's FCAS markets pay for smoothness.
     # cost = (grid_power[t] - grid_power[t-1])^2 * rate
-    #   - 50 kW ramp → 2500 × 0.001 = $2.50
-    #   - 100 kW ramp → 10000 × 0.001 = $10
-    #   - 10 kW ramp → 100 × 0.001 = $0.10
+    #   - 50 kW ramp → 2500 × 1.0 = $2500
+    #   - 100 kW ramp → 10000 × 1.0 = $10000
+    #   - 10 kW ramp → 100 × 1.0 = $100
     # Quadratic shape rewards smooth dispatch disproportionately over jagged.
     # First step has no prior grid power, so its ramp charge is zero.
-    ramp_charge_per_kw2: float = 0.001
+    ramp_charge_per_kw2: float = 1.0
 
     # FCAS (Frequency Control Ancillary Services) reserve: passive revenue for
     # holding inverter capacity available for the grid. Real-world: AEMO pays
@@ -83,10 +83,10 @@ class SimulationConfig:
     #   |battery_flow_kw| + fcas_reserve_kw <= max_inverter_kw
     # Every kW you commit to FCAS is a kW you cannot use for arbitrage.
     #
-    # Calibration: $0.04/kW/hour ≈ real AEMO contingency-FCAS rates. Caps the
-    # max revenue from full FCAS reservation at ~$48/day on a 50 kW inverter,
+    # Calibration: $40.00/kW/hour ≈ real AEMO contingency-FCAS rates at city scale. Caps the
+    # max revenue from full FCAS reservation at ~$48,000/day on a 50 MW inverter,
     # comparable to good arbitrage. Neither strategy dominates the other.
-    fcas_revenue_per_kw_per_hour: float = 0.04
+    fcas_revenue_per_kw_per_hour: float = 40.0
 
     # ---------------- Compliance mechanic (S5+) ----------------
     # Operators occasionally issue directives that constrain dispatch
@@ -106,13 +106,13 @@ class SimulationConfig:
     #   max_export_kw_override: float — penalise net exports above this
     #     ceiling (i.e. abs(net_grid_power) above this when exporting).
     #
-    # Penalties are MODERATE — well above battery wear (~$0.05/kWh) so
-    # ignoring them is costly, but well below blackouts ($10/kWh) so a
+    # Penalties are MODERATE — well above battery wear (~$50/kWh) so
+    # ignoring them is costly, but well below blackouts ($10000/kWh) so a
     # controller can prefer compliance breach to load shedding in a
     # genuine emergency. This is the design: compliance is a soft
     # operational constraint, not a hard physics one.
-    compliance_soc_penalty_per_unit: float = 200.00  # $/SOC-unit short, per step
-    compliance_export_penalty_per_kw: float = 50.00  # $/kW exceeded, per step
+    compliance_soc_penalty_per_unit: float = 200000.00  # $/SOC-unit short, per step
+    compliance_export_penalty_per_kw: float = 50000.00  # $/kW exceeded, per step
 
     # ---------------- Diesel ban + exemption mechanic ----------------
     # Scenarios may declare ``diesel_ban_window`` events (with a
@@ -133,14 +133,14 @@ class SimulationConfig:
     # pull the ``directive_id`` out of the announcing alert text, but
     # can't compose a credible 60-char justification anchored to the
     # current operational context. An LLM does both naturally.
-    diesel_ban_penalty_per_kwh: float = 3.00  # $/kWh of diesel during a ban with no exemption
+    diesel_ban_penalty_per_kwh: float = 3000.00  # $/kWh of diesel during a ban with no exemption
     min_exemption_reason_chars: int = 60
     max_exemption_duration_steps: int = 12
 
     # Forecast configuration (lookahead with growing noise)
     forecast_horizon: int = 16  # how many future steps the controller sees
     forecast_sigma_demand: float = 3.0  # additive noise std (kW)
-    forecast_sigma_price: float = 0.02  # additive noise std ($/kWh)
+    forecast_sigma_price: float = 20.0  # additive noise std ($/kWh)
     forecast_solar_noise_pct: float = (
         0.12  # multiplicative noise std (fraction of actual solar)
     )
